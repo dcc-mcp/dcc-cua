@@ -37,6 +37,7 @@ use windows::{
 
 const PIXEL_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 const FRAME_POOL_SIZE: i32 = 2;
+const MAX_FUTURE_SOURCE_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Error)]
 #[error("persistent WGC capture failed: {message}")]
@@ -184,6 +185,30 @@ impl WgcFrameMeasurement {
             let mut measurement = self.at_publish_time_100ns(qpc);
             measurement.capture_clock =
                 map_compositor_clock(measurement.compositor, qpc, before, after);
+
+            // Some DWM/WGC frames arrive just before their compositor clock
+            // boundary. Do not publish a fabricated capture time and do not
+            // turn that normal vblank lead into a permanent pause. Wait for
+            // the bounded source lead, then calibrate again against a fresh
+            // QPC sample. Large or unmeasurable leads still fail closed.
+            if attempt < 2
+                && measurement.capture_clock
+                    == Err(WgcCompositorTimingUnavailable::TimestampAfterPublish)
+                && let (Some(source), Some(published)) = (
+                    measurement.compositor_system_relative_time_100ns,
+                    measurement.published_qpc_100ns,
+                )
+                && let Some(wait_100ns) = source
+                    .checked_sub(published)
+                    .and_then(|delta| u64::try_from(delta).ok())
+                && let Some(wait) = wait_100ns
+                    .checked_mul(100)
+                    .map(Duration::from_nanos)
+                    .filter(|wait| *wait <= MAX_FUTURE_SOURCE_WAIT)
+            {
+                std::thread::sleep(wait);
+                continue;
+            }
             if attempt == 2
                 || measurement.capture_clock
                     != Err(WgcCompositorTimingUnavailable::CalibrationBracketTooWide)

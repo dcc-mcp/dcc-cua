@@ -17,6 +17,10 @@ The MCP surface is intentionally small:
 - `dcc_cua_task_call` performs one method inside that retained task scope.
 - `task_status` reads lifecycle state.
 - `stop_task` closes the session and revokes its internal lease.
+- `dcc_cua_metrics` reads connection-scoped latency, message-size, token and
+  observation-reuse counters.
+- `dcc_cua_record_model_usage` records exact model input and output token
+  counts supplied by the Agent Host.
 
 There are no MCP UI resources or separate prepare, authorize, and start tools.
 The internal constructor-owned broker remains process-local so an MCP caller
@@ -79,15 +83,78 @@ The checkout also includes `.claude-plugin/marketplace.json` and a portable
 `.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua mcp-server`
 directly through their native MCP configuration.
 
-After installation, confirm that `tools/list` exposes exactly `start_task`,
-`task_status`, `stop_task`, and `dcc_cua_task_call`. Instrumented builds also
-advertise the read-only `dcc-cua://connection/current` resource, which reports
-only the caller's current connection. It does not grant task authority or list
-other clients. Use `dcc-cua connections` for the local bounded diagnostic
-registry; older resident bridges have no records. See
+After installation, confirm that `tools/list` exposes `start_task`,
+`task_status`, `stop_task`, `dcc_cua_task_call`, `dcc_cua_metrics`, and
+`dcc_cua_record_model_usage`. Instrumented builds also advertise the
+read-only `dcc-cua://connection/current` and `dcc-cua://connection/metrics`
+resources. Both report only the caller's current connection. They do not grant
+task authority or list other clients. Use `dcc-cua connections` for the local
+bounded diagnostic registry; older resident bridges have no records. See
 [MCP connection diagnostics](design/mcp-connection-diagnostics.md) for the
 schema and attribution limits. A stale authorization tool or card means an
 older runtime/plugin is still loaded; reconnect after upgrading.
+
+## Performance and token diagnostics
+
+Call `dcc_cua_metrics` after a scenario, or read
+`dcc-cua://connection/metrics`, to obtain one JSON report for the current MCP
+connection. The report includes transport and tool latency totals and maxima,
+UTF-8 message bytes, standalone snapshots, post-action snapshots, and the
+number of actions that consumed a returned `post_snapshot` directly. A
+`capture_after: true` response with `observation_required: false` is the next
+observation and should be passed to the next action without another `snapshot`.
+
+Protocol token fields are estimates using `ceil(UTF-8 bytes / 4)`. Exact model
+usage is outside the DCC-CUA process. An Agent Host can report it without an
+extra tool round trip by sending this notification on the same connection:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/model_usage","params":{"input_tokens":1200,"output_tokens":180,"cached_input_tokens":900,"model_elapsed_ms":1480}}
+```
+
+Send one usage delta per model call on the connection. The same usage object
+may be attached under `params._meta.dcc-cua.model_usage` (the legacy
+top-level `_meta` also works). `model_tokens.available` indicates whether the
+host reported usage. `cached_input_fraction` divides cached tokens by input
+tokens for calls with cache measurements. `cache_hit_rate` is the fraction
+of those calls reporting at least one cached token. Optional `model_elapsed_ms` is the
+host's elapsed time waiting for a model call, including streaming.
+
+`transport.output_image_base64_bytes_total` counts the Base64 data strings in
+native MCP image blocks on stdout. `output_other_bytes_total` covers all other
+encoded JSONL bytes, including accessibility trees, metadata and framing.
+These two fields sum to `output_bytes_total`. Image tokenization happens at the
+model provider.
+
+For native buttons, request `accessibility_snapshot` with bounded `max_nodes`
+and `max_depth`. Clients that consume `structuredContent` can set
+`compact_text: true` alongside `method` in `dcc_cua_task_call` to send the
+full tree once. The structured observation and element references remain
+available for the next action.
+
+After verifying the scenario postcondition, the host can send one outcome
+per attempt. Measure from the start of the agent task through verification,
+including model calls, tool execution and waits. Include failures in the same
+measurement. A task can span multiple `start_task` leases. Send its outcome
+once on the reporting connection.
+
+```json
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/task_outcome","params":{"success":true,"elapsed_ms":4210}}
+```
+
+`agent_tasks` reports the sample count, successes, success rate and total
+wall time. The rate is null until the host supplies an outcome.
+For a local Codex Host that retains rollout events, run
+`python scripts/codex_turn_metrics.py <rollout.jsonl> <turn_id>` to read the
+completed turn duration, time to first token, usage deltas and MCP method
+maxima. The reader emits counters only. A completed turn can contain multiple
+scenarios. Use their independent postconditions for outcome reporting.
+The server keeps only bounded aggregate counters
+and does not copy prompts, responses, request IDs, paths, coordinates, pixels,
+or model names into the report. Passing `include_metrics: true` to
+`dcc_cua_task_call` adds the current report and that call's elapsed time under
+the result `_meta.dcc-cua.performance` field. It is disabled by default so a
+debug payload cannot inflate normal model messages.
 
 Before the first observation or input, report the `provider=dcc-cua`, runtime
 version, exact PID, and exact HWND returned by `start_task`. Use one persistent
@@ -191,7 +258,10 @@ check refuses dispatch or reports a partial dispatch; it does not activate the
 window or fall back to another backend. Any attempted action consumes the old
 observation. With `capture_after: true`, the post-action observation uses the
 same pixel route and cannot mint semantic element authorization. A failed post
-snapshot requires a fresh observation before another action.
+snapshot requires a fresh observation before another action. When an action
+requests `capture_after: true`, the returned `post_snapshot` is the next
+observation. Reuse its observation id directly and skip another `snapshot`
+call while `observation_required` is false.
 
 The native worker holds the owning banner suppression and the existing
 acknowledged exclusion of only its configured, process-local registered cursor
@@ -207,11 +277,14 @@ window may be covered. Keyboard and text actions retain the complete visibility
 requirement. A readable background capture alone never authorizes foreground
 input or click-through to another window.
 
-Windows pixel `drag` accepts exactly two screenshot-local `path` points and an
-optional `button` (`left`, `middle`, or `right`; default `left`). `duration_ms`
-is 1–10000 (default 500); `steps` is 1–200 (default 20). Do not supply x/y,
+Windows pixel `drag` accepts a bounded screenshot-local `path` with at least
+two points and an optional `button` (`left`, `middle`, or `right`;
+default `left`). Use multiple points for one continuous pen or brush stroke.
+With two points, `duration_ms` is 1–10000 (default 160) and `steps` is
+1–200 (default 20). Sampled multi-point paths send their points directly and
+omit `steps`. Do not supply x/y,
 modifiers, keys, text, semantic selectors, or backend overrides. The complete
-interpolated path must be observed and unredacted; every sampled point is
+submitted path must be observed and unredacted; every sampled point is
 natively preflighted before input and checked again before movement. Target
 identity, physical bounds, DPI, foreground and visibility remain fenced while
 the button is held. Failure or interruption releases only this operation's
@@ -221,7 +294,7 @@ a fresh snapshot or typed application-state readback to prove the intended move.
 For example, the `params` of a granted `execute_action` call can be:
 
 ```json
-{"observation_id":"<latest>","capture_after":true,"action":{"action":"drag","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","path":[{"x":100,"y":200},{"x":260,"y":240}],"duration_ms":500,"steps":20}}
+{"observation_id":"<latest>","capture_after":true,"action":{"action":"drag","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","path":[{"x":100,"y":200},{"x":140,"y":215},{"x":190,"y":225},{"x":260,"y":240}],"duration_ms":180}}
 ```
 
 Semantic selectors, browser/clipboard input, secret input, wheel, move,
@@ -305,6 +378,60 @@ task without closing or terminating the application.
 Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
 publication remain separate human boundaries. Removing the duplicated DCC-CUA
 authorization card does not automate those external account/security decisions.
+
+### Ordered keyboard macros
+
+Use `key_sequence` for a predictable workflow in an exact Windows foreground
+window. Grant `execute_action` and the non-secret `raw_input/key_sequence`
+action on a `pixels_only` task. Place the cursor in the intended editor and
+use its latest observation. Each entry in `keys` is a tap or a chord such as
+`CTRL+A`. Keys in a chord are released in reverse order before the next tap.
+Repeated taps are supported. The timeline accepts 1–64 entries and a
+`delay_ms` of 0–200 between taps (default 40).
+
+```json
+{"observation_id":"<latest>","capture_after":true,"action":{"action":"key_sequence","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","keys":["G","Z","2","ENTER"],"delay_ms":60}}
+```
+
+Both Blender examples use one foreground 3D View in Object Mode, the English
+operator search and the default Blender keymap. The [modeling macro](../examples/blender-extrude-column.json)
+extrudes a plane, changes the object scale and renames it. The
+[rig and animation macro](../examples/blender-rig-keyframes.json) creates a
+connected three-bone chain and keys a 30-degree rotation at frame 1. Run
+through the eight Right taps with `capture_after=true`. Verify Pose mode at
+frame 9 and the first keyframe, then reuse the post-action observation for
+the last three chords to clear the rotation, insert a key and return to Object
+Mode. Submit each batch as `params.action` with `method=execute_action`.
+The modeling recipe uses zero inter-step delay and the rig uses 12 ms.
+Every chord checks its target and
+the Agent frame. Windows presents the frame outside a restored window, or
+as a strip along an exposed monitor edge for a maximized window. A window
+covering the entire monitor has no space for this presenter. A sequence
+requires a visible frame before it can start and between chords.
+
+Use `capture_after=true` when the next decision needs the resulting view.
+For a terminal action with an application readback, verify the mesh or animation
+directly. A later UI action then needs a fresh observation. Successful native
+delivery reports `key_sequence_timing` with the chord count, dispatch time and
+time spent waiting between chords. Dispatch time includes native checks and
+input insertion. Measure screenshot round trips and application completion
+separately.
+For mixed mouse actions, use the [script runner](../skills/cua-cli/scripts/action_sequence.py)
+on the same task connection. The [browser example](../examples/browser-pointer-sequence.json)
+hovers, clicks and drags between named controls. Supply
+`browser_pointer_sequence(call, target_id, tab_id, steps, journal, verify)`.
+Here `call(method, request)` sends `dcc_cua_task_call` with
+`params={"request": request}`, checks the tool and browser status, and returns
+the inner browser structured receipt. For native windows, pass
+`window_sequence(call, (pid, hwnd), initial_snapshot, steps, journal, verify)`
+with an adapter returning the checked Host receipt. The optional verification
+callback receives the step and receipt and can return application evidence.
+Save the input plan alongside the journal. Its timings include observation
+and delivery, with total elapsed time through readback recorded separately.
+
+End a macro at any point where the next decision depends on a dialog,
+selection or other unknown state. An interrupted macro can leave a completed
+prefix. Inspect that state before issuing further input.
 
 ## Other agent hosts
 

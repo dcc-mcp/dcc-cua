@@ -64,6 +64,35 @@ pub(crate) async fn start_granted_window_session(
     Ok((session, started))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn enable_granted_pixel_input(
+    grant: &TaskGrant,
+    preauthorized: Option<&TrustedTaskAuthorizationLease>,
+    security_services: &HostSecurityServices,
+    session: &mut dcc_cua_core::ComputerUseSession,
+) -> Result<(), HostError> {
+    if grant.observation_mode == TaskObservationMode::PixelsOnly && grant.allow_raw_input {
+        let lease = preauthorized.and_then(|lease| {
+            security_services
+                .task_authorization_host
+                .as_ref()?
+                .recording_authorization(lease)
+        });
+        let Some(lease) = lease else {
+            let _ = session.stop().await;
+            return Err(denied(
+                HostProtocolErrorCode::TaskAuthorizationDenied,
+                "revocation-aware exact-window input lease",
+            ));
+        };
+        if let Err(error) = session.enable_guarded_unix_input(lease).await {
+            let _ = session.stop().await;
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
 /// Bind the constructor-owned recording fence before any optional recorder
 /// starts. Refusal tears down the same opened session before returning.
 pub(crate) async fn prepare_granted_session_recording(
@@ -326,4 +355,22 @@ pub(crate) async fn refresh_session_health_input_and_target(host: &mut HostSessi
         host.observe_target_availability(availability);
     }
     target_probe_failed
+}
+
+pub(crate) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
+    let HostError::ComputerUse(mut error) = error else {
+        return error;
+    };
+    let details = error.details.get_or_insert_default();
+    if details.action_attempted.is_none() {
+        details.phase = Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch);
+        details.action_attempted = Some(false);
+        details.input_sent = Some(dcc_cua_core::ComputerUseInputState::NotSent);
+        details.completion = Some(dcc_cua_core::ComputerUseCompletionState::Known);
+        details.effect_unknown = Some(false);
+        details.automatic_input = Some(false);
+        details.blind_retry = Some(false);
+        details.fresh_observation_required = Some(true);
+    }
+    HostError::ComputerUse(error)
 }

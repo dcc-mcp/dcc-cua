@@ -976,6 +976,7 @@ pub(crate) fn virtual_key(key: &str) -> Result<u16, WindowsHeldKeyError> {
         "end" => VK_END,
         "pageup" | "pgup" => VK_PRIOR,
         "pagedown" | "pgdn" => VK_NEXT,
+        "comma" | "," => VK_OEM_COMMA,
         "f1" => VK_F1,
         "f2" => VK_F2,
         "f3" => VK_F3,

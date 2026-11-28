@@ -12,6 +12,8 @@ use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, ImageFormat, ImageOrder,
     MapState, VisualClass, WindowClass,
 };
+mod execution_frame;
+mod input;
 mod transport;
 use transport::Connection;
 
@@ -32,7 +34,7 @@ struct Evidence {
 }
 
 pub(super) struct LinuxPixels {
-    connection: Connection,
+    connection: Arc<Connection>,
     root: u32,
     window: u32,
     pid: u32,
@@ -45,9 +47,10 @@ pub(super) struct LinuxPixels {
     generation: u64,
     usable: bool,
     native_task_authorization: Option<(String, Arc<crate::NativeTaskAuthorization>)>,
+    pub(super) input_lease: Option<Arc<crate::RecordingAuthorization>>,
 }
 
-pub(super) type Handle = Arc<Mutex<LinuxPixels>>;
+use super::unix_pixels::Handle;
 
 fn refused(code: ComputerUseErrorCode, message: impl Into<String>) -> ComputerUseError {
     ComputerUseError::new(code, message)
@@ -151,7 +154,7 @@ impl LinuxPixels {
             .map_err(native)?;
         let process = process_identity(pid)?;
         let mut bound = Self {
-            connection,
+            connection: Arc::new(connection),
             root,
             window,
             pid,
@@ -164,6 +167,7 @@ impl LinuxPixels {
             generation: 0,
             usable: true,
             native_task_authorization,
+            input_lease: None,
         };
         let evidence = bound.evidence()?;
         bound.drain_events(false)?;
@@ -313,7 +317,7 @@ impl LinuxPixels {
                 "the exact X11 target is outside its screen",
             ));
         }
-        self.require_unobscured(bounds)?;
+        self.require_unobscured(self.window, bounds)?;
         let title = self
             .connection
             .get_property(false, self.window, self.title_atom, self.utf8_atom, 0, 4096)
@@ -347,15 +351,32 @@ impl LinuxPixels {
                 is_on_screen: true,
                 is_minimized: false,
                 z_index: None,
-                is_foreground: false,
+                is_foreground: self
+                    .connection
+                    .get_input_focus()
+                    .map_err(native)?
+                    .reply()
+                    .map_err(native)?
+                    .focus
+                    == self.window,
             },
             process,
             visual: attributes.visual,
         })
     }
 
-    fn require_unobscured(&self, bounds: [i32; 4]) -> ComputerUseResult<()> {
-        let mut child = self.window;
+    fn require_unobscured(&self, child: u32, bounds: [i32; 4]) -> ComputerUseResult<()> {
+        match self.scan_stack(child, bounds) {
+            // A transient sibling may close between QueryTree and SelectInput.
+            // Re-read the full ancestry and stack before admitting the target.
+            Err(error) if error.code == ComputerUseErrorCode::StaleObservation => {
+                self.scan_stack(child, bounds)
+            }
+            result => result,
+        }
+    }
+
+    fn scan_stack(&self, mut child: u32, bounds: [i32; 4]) -> ComputerUseResult<()> {
         let mut remaining = MAX_WINDOWS;
         for _ in 0..32 {
             let tree = self
@@ -383,12 +404,27 @@ impl LinuxPixels {
                 .position(|id| *id == child)
                 .ok_or_else(|| native("target missing from X11 stack"))?;
             for &window in &siblings[index + 1..] {
+                let sibling_error = |error: x11rb::errors::ReplyError| match &error {
+                    x11rb::errors::ReplyError::X11Error(e)
+                        if matches!(
+                            e.error_kind,
+                            x11rb::protocol::ErrorKind::Window
+                                | x11rb::protocol::ErrorKind::Drawable
+                        ) && e.bad_value == window =>
+                    {
+                        refused(
+                            ComputerUseErrorCode::StaleObservation,
+                            "X11 sibling disappeared during stacking inventory",
+                        )
+                    }
+                    _ => native(error),
+                };
                 let attrs = self
                     .connection
                     .get_window_attributes(window)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 if attrs.map_state != MapState::VIEWABLE || attrs.class != WindowClass::INPUT_OUTPUT
                 {
                     continue;
@@ -401,13 +437,13 @@ impl LinuxPixels {
                     .shape_select_input(window, true)
                     .map_err(native)?
                     .check()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 let shape = self
                     .connection
                     .shape_query_extents(window)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 if shape.bounding_shaped
                     && (shape.bounding_shape_extents_width == 0
                         || shape.bounding_shape_extents_height == 0)
@@ -419,22 +455,31 @@ impl LinuxPixels {
                     .get_geometry(window)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 let position = self
                     .connection
                     .translate_coordinates(window, self.root, 0, 0)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 let border = i32::from(geometry.border_width);
-                // Only a provably empty bounding shape is exempt. Retain
-                // conservative geometry for every nonempty or unshaped
-                // sibling, without trusting titles or input passthrough.
+                // The server's bounding-shape extents enclose every painted
+                // rectangle. Keep the border conservative on both paths.
+                let (x, y, width, height) = if shape.bounding_shaped {
+                    (
+                        shape.bounding_shape_extents_x,
+                        shape.bounding_shape_extents_y,
+                        shape.bounding_shape_extents_width,
+                        shape.bounding_shape_extents_height,
+                    )
+                } else {
+                    (0, 0, geometry.width, geometry.height)
+                };
                 let other = [
-                    i32::from(position.dst_x) - border,
-                    i32::from(position.dst_y) - border,
-                    i32::from(geometry.width) + 2 * border,
-                    i32::from(geometry.height) + 2 * border,
+                    i32::from(position.dst_x) + i32::from(x) - border,
+                    i32::from(position.dst_y) + i32::from(y) - border,
+                    i32::from(width) + 2 * border,
+                    i32::from(height) + 2 * border,
                 ];
                 if bounds[0] < other[0] + other[2]
                     && other[0] < bounds[0] + bounds[2]
@@ -532,7 +577,19 @@ impl LinuxPixels {
     }
 
     pub(super) fn capture(&mut self) -> ComputerUseResult<(Vec<u8>, WindowTarget, Value)> {
-        let result = self.capture_inner();
+        // A presenter can settle between bind and the first GetImage. Discard
+        // the stale frame and re-prove the same retained target once. Identity
+        // loss, occlusion and authorization failures remain terminal.
+        let first = self.capture_inner();
+        let result = match first {
+            Err(error) if error.code == ComputerUseErrorCode::StaleObservation && self.usable => {
+                self.capture_inner().map(|(data, target, mut provenance)| {
+                    provenance["capture_attempts"] = json!(2);
+                    (data, target, provenance)
+                })
+            }
+            result => result,
+        };
         if result.is_err() {
             self.usable = false;
         }
@@ -615,7 +672,7 @@ impl LinuxPixels {
         }
         self.generation += 1;
         let provenance = json!({"backend":"x11-get-image-exact", "scope":"window", "observation_mode":"pixels_only",
-            "pixels_captured":true, "read_only":true, "input_available":false, "activation_available":false,
+            "pixels_captured":true, "read_only":self.input_lease.is_none(), "input_available":self.input_lease.is_some(), "activation_available":false,
             "accessibility_available":false, "degraded":false, "whole_desktop_capture":false,
             "fallback":null, "process_id":self.pid, "window_handle":self.window,
             "native_window_bounds":after.target.bounds, "capture_generation":self.generation,
@@ -623,18 +680,4 @@ impl LinuxPixels {
             "window_lifecycle_subscription":true, "occlusion_checked":true, "coordinate_units":"x11_pixels"});
         Ok((png, after.target, provenance))
     }
-}
-
-pub(super) async fn operate<T: Send + 'static>(
-    handle: Handle,
-    operation: impl FnOnce(&mut LinuxPixels) -> ComputerUseResult<T> + Send + 'static,
-) -> ComputerUseResult<T> {
-    tokio::task::spawn_blocking(move || {
-        let mut bound = handle
-            .lock()
-            .map_err(|_| native("X11 capture worker panicked"))?;
-        operation(&mut bound)
-    })
-    .await
-    .map_err(native)?
 }

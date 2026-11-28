@@ -228,6 +228,14 @@ fn run_platform_command(arguments: Vec<String>) -> Result<(), Box<dyn std::error
     }
     #[cfg(target_os = "macos")]
     {
+        if arguments
+            .first()
+            .is_some_and(|arg| arg == "__macos-execution-frame")
+        {
+            std::process::exit(dcc_cua_indicator::macos_frame::run_renderer(
+                &arguments[1..],
+            ));
+        }
         if let Some(generation) = private_worker_generation_from(&arguments)? {
             dcc_cua_core::run_private_worker_with_appkit(generation)
                 .map_err(std::io::Error::other)?;

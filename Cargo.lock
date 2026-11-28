@@ -1027,16 +1027,16 @@ dependencies = [
 
 [[package]]
 name = "cua-cursor-motion"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "cua-driver-contract"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "schemars",
  "serde",
@@ -1046,8 +1046,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-core"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1089,8 +1089,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-sdk"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -1112,8 +1112,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-testkit"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "arbitrary",
  "async-trait",
@@ -1134,8 +1134,8 @@ dependencies = [
 
 [[package]]
 name = "cursor-overlay"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "anyhow",
  "cua-cursor-motion",
@@ -1212,6 +1212,7 @@ dependencies = [
  "dcc-cua-client",
  "dcc-cua-core",
  "dcc-cua-host",
+ "dcc-cua-indicator",
  "dcc-cua-platform-windows",
  "dcc-cua-profiles",
  "dcc-cua-protocol",
@@ -1254,6 +1255,7 @@ version = "1.22.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "core-graphics",
  "cua-driver-contract",
  "cua-driver-sdk",
  "cursor-overlay",
@@ -1263,6 +1265,8 @@ dependencies = [
  "dcc-cua-protocol",
  "dcc-cua-showcase",
  "dcc-cua-workspace-hack",
+ "foreign-types 0.5.0",
+ "libc",
  "platform-macos",
  "png 0.17.16",
  "rstest",
@@ -1329,6 +1333,7 @@ dependencies = [
 name = "dcc-cua-indicator"
 version = "1.22.0"
 dependencies = [
+ "cc",
  "dcc-cua-interrupt",
  "dcc-cua-workspace-hack",
  "rstest",
@@ -2397,7 +2402,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -3566,8 +3571,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-linux"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -3612,8 +3617,8 @@ dependencies = [
 
 [[package]]
 name = "platform-macos"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3650,8 +3655,8 @@ dependencies = [
 
 [[package]]
 name = "platform-windows"
-version = "0.60.0"
-source = "git+https://github.com/trycua/cua.git?rev=7ebe6a662ea380d0b7a340a33ee59feaf8f56f43#7ebe6a662ea380d0b7a340a33ee59feaf8f56f43"
+version = "0.68.0"
+source = "git+https://github.com/trycua/cua.git?rev=cb4f8dbe279c9f815efdef888ec938fb89bab8d6#cb4f8dbe279c9f815efdef888ec938fb89bab8d6"
 dependencies = [
  "anyhow",
  "async-trait",

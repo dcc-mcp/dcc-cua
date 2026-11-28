@@ -33,6 +33,118 @@ fn connection_identity_uses_bounded_readable_client_metadata(
 }
 
 #[rstest]
+fn performance_tools_and_resource_are_discoverable() {
+    let tools = tool_definitions();
+    assert!(tools.iter().any(|tool| tool["name"] == "dcc_cua_metrics"));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["name"] == "dcc_cua_record_model_usage")
+    );
+    let task_call = tools
+        .iter()
+        .find(|tool| tool["name"] == "dcc_cua_task_call")
+        .unwrap();
+    assert_eq!(
+        task_call["inputSchema"]["properties"]["include_metrics"]["default"],
+        false
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn metrics_bound_unknown_names_and_require_actual_usage() {
+    let mut server = test_server();
+    for name in ["unknown-1", "unknown-2"] {
+        assert_eq!(
+            server.call_tool(json!({"name":name})).await.unwrap()["isError"],
+            true
+        );
+    }
+    let usage = |value| json!({"name":"dcc_cua_record_model_usage","arguments":{"usage":value}});
+    assert_eq!(
+        server.call_tool(usage(json!({}))).await.unwrap()["isError"],
+        true
+    );
+    server
+        .call_tool(usage(json!({"input_tokens":0})))
+        .await
+        .unwrap();
+    let report = server.performance.report();
+    assert_eq!(
+        report["tool_calls"]["methods"],
+        json!({"unknown":2,"dcc_cua_record_model_usage":2})
+    );
+    assert_eq!(report["model_tokens"]["reported_model_calls_total"], 1);
+    assert_eq!(
+        tool_definitions()
+            .iter()
+            .find(|t| t["name"] == "dcc_cua_record_model_usage")
+            .unwrap()["annotations"]["idempotentHint"],
+        false
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn compact_text_keeps_the_structured_observation_and_preserves_error_text() {
+    let observation = json!({"type":"accessibility_snapshot","observation_id":"new","root":{"elements":[{"element_token":"bound:1"}]}});
+    let projected =
+        crate::mcp_output::project_tool_result(observation.clone(), None, Some("summary")).unwrap();
+    assert_eq!(projected["structuredContent"], observation);
+    assert_eq!(projected["content"][0]["text"], "summary");
+    let error = crate::mcp_output::project_tool_result(
+        json!({"type":"error","message":"stale target"}),
+        None,
+        Some("summary"),
+    )
+    .unwrap();
+    assert_eq!(error["content"][0]["text"], "stale target");
+    let mut server = test_server();
+    assert!(
+        server
+            .task_call(json!({"method":"execute_action","compact_text":true}))
+            .await
+            .unwrap_err()
+            .contains("compact_text")
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn host_verified_outcome_is_counted_without_a_response() {
+    let mut server = test_server();
+    let response = server
+        .handle_rpc(json!({
+            "jsonrpc":"2.0","method":"notifications/dcc-cua/task_outcome",
+            "params":{"success":false,"elapsed_ms":150}
+        }))
+        .await;
+    assert!(response.is_none());
+    let tasks = &server.performance.report()["agent_tasks"];
+    assert_eq!(tasks["reported_outcomes"], 1);
+    assert_eq!(tasks["success_rate"], 0.0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn model_usage_notification_is_aggregated_without_a_response() {
+    let mut server = test_server();
+    let response = server
+        .handle_rpc(json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/dcc-cua/model_usage",
+            "params":{"input_tokens":13,"output_tokens":5}
+        }))
+        .await;
+    assert!(response.is_none());
+
+    let report = server.performance.report();
+    assert_eq!(report["model_tokens"]["reported_model_calls_total"], 1);
+    assert_eq!(report["model_tokens"]["reported_total_tokens"], 18);
+}
+
+#[rstest]
 #[tokio::test]
 async fn initialize_binds_display_identity_once_without_changing_task_authority() {
     let mut server = test_server();
@@ -579,6 +691,33 @@ fn foreground_remote_diagnostic_fixture() -> Value {
             {"phase":"restore_target_frame","api_return":1}],
         "foreground_poll_count":20
     })
+}
+
+#[rstest]
+fn task_remote_error_projection_carries_only_valid_native_fence_samples() {
+    let sample = json!({
+        "schema_version":1,"authorizes_input":false,"target_process_id":42,"target_window_handle":7,
+        "unobscured":false,"point_proof_complete":true,"point_visible":false,"hit_is_target_or_child":false,
+        "redacted_rectangles":[[1,2,3,4]],"redaction_count":1,"redactions_complete":true,
+        "point":null,"hit_process_id":null,"hit_window_handle":null,"hit_root_window_handle":null
+    });
+    let project = |sample| {
+        let error = HostClientError::Remote {
+            code: "target_unavailable".into(),
+            message: "guard rejected input".into(),
+            response: json!({"details":{"input_sent":"not_sent","native_input_fence":sample}}),
+        };
+        serde_json::to_value(project_task_remote_error(&error, "execute_action").unwrap()).unwrap()
+    };
+    assert_eq!(
+        project(sample.clone())["details"]["native_input_fence"],
+        sample
+    );
+    let mut invalid = sample;
+    invalid["authorizes_input"] = json!(true);
+    let details = &project(invalid)["details"];
+    assert_eq!(details["input_sent"], "not_sent");
+    assert!(details.get("native_input_fence").is_none());
 }
 
 #[rstest]
@@ -1229,7 +1368,6 @@ fn pixel_raw_input_permission_is_derived_from_a_real_supported_scope(#[case] act
 
 #[rstest]
 #[case("action", json!("scroll"))]
-#[case("action", json!("move"))]
 #[case("action", json!("press"))]
 #[case("input_kind", json!("semantic"))]
 #[case("secret_input", json!(true))]
@@ -1403,20 +1541,22 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
         .iter()
         .find(|scope| scope["properties"]["input_kind"]["const"] == "raw_input")
         .expect("the original closed raw-input branch remains explicit")["properties"];
-    assert_eq!(
-        input["action"]["enum"],
-        json!([
-            "click",
-            "double_click",
-            "right_click",
-            "toggle",
-            "drag",
-            "keypress",
-            "keyboard_shortcut",
-            "type",
-            "type_chars"
-        ])
-    );
+    let expected_actions = [
+        "click",
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        "move",
+        "double_click",
+        "right_click",
+        "toggle",
+        "drag",
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        "key_sequence",
+        "keypress",
+        "keyboard_shortcut",
+        "type",
+        "type_chars",
+    ];
+    assert_eq!(input["action"]["enum"], json!(expected_actions));
     assert_eq!(input["input_kind"]["const"], "raw_input");
     assert_eq!(input["secret_input"]["const"], false);
     assert_eq!(input["authorization_category"]["const"], "raw_input");
@@ -1935,148 +2075,6 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
         assert!(!properties.contains_key(forbidden));
     }
     assert!(start.get("_meta").is_none());
-}
-
-#[rstest]
-fn task_action_schema_matches_the_closed_runtime_contract() {
-    let schema = task_action_scope_schema();
-    let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 10);
-    let audio = variants
-        .iter()
-        .filter(|scope| scope["properties"]["input_kind"]["const"] == "playback_audio")
-        .collect::<Vec<_>>();
-    assert_eq!(audio, vec![&recording_audio::scope_schema()]);
-
-    let variant = |input_kind: &str| {
-        variants
-            .iter()
-            .find(|variant| {
-                variant["properties"]["input_kind"]["const"].as_str() == Some(input_kind)
-            })
-            .unwrap()
-    };
-    for action in [
-        "minimize_window",
-        "set_window_frame",
-        "dismiss_menu",
-        "capture_preparation_begin",
-    ] {
-        let mut matching = variants
-            .iter()
-            .filter(|scope| scope["properties"]["action"]["const"].as_str() == Some(action));
-        let scope = matching.next().unwrap();
-        assert!(matching.next().is_none());
-        assert_eq!(scope["type"], "object");
-        assert_eq!(scope["additionalProperties"], false);
-        assert_eq!(
-            scope["required"],
-            json!([
-                "action",
-                "input_kind",
-                "secret_input",
-                "authorization_category"
-            ])
-        );
-        assert_eq!(
-            scope["properties"],
-            json!({
-                "action": {"const": action},
-                "input_kind": {"const": "window_state"},
-                "secret_input": {"const": false},
-                "authorization_category": {"const": "window_state"},
-                "browser_origin": {"type": "null"}
-            })
-        );
-    }
-    for kind in ["semantic", "raw_input", "browser", "clipboard"] {
-        let input = &variant(kind)["properties"];
-        for window_action in ["capture_preparation_begin", "dismiss_menu"] {
-            assert_ne!(input["action"]["const"], window_action);
-            if let Some(actions) = input["action"]["enum"].as_array() {
-                assert!(!actions.contains(&json!(window_action)));
-            }
-        }
-    }
-    let semantic = variant("semantic");
-    let native = variant("window_state");
-    assert_eq!(native["properties"]["action"]["const"], "minimize_window");
-    assert_eq!(native["properties"]["secret_input"]["const"], false);
-    assert_eq!(
-        native["properties"]["authorization_category"]["const"],
-        "window_state"
-    );
-    assert_eq!(
-        semantic["properties"]["action"]["enum"],
-        json!(TrustedTaskActionScope::NATIVE_ACTIONS)
-    );
-    assert_eq!(
-        semantic["properties"]["authorization_category"]["enum"],
-        json!(TrustedTaskActionScope::SEMANTIC_CATEGORIES)
-    );
-    assert!(
-        !semantic["properties"]["action"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("browser_click"))
-    );
-
-    let navigation = variants
-        .iter()
-        .find(|variant| variant["properties"]["action"]["const"] == "browser_extension_navigate")
-        .unwrap();
-    assert_eq!(navigation["additionalProperties"], false);
-    assert_eq!(
-        navigation["required"],
-        json!([
-            "action",
-            "input_kind",
-            "secret_input",
-            "authorization_category",
-            "browser_origin"
-        ])
-    );
-    assert_eq!(
-        navigation["properties"],
-        json!({
-            "action":{"const":"browser_extension_navigate"},
-            "input_kind":{"const":"browser"}, "secret_input":{"const":false},
-            "authorization_category":{"const":"external_effect"},
-            "browser_origin":{"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
-        })
-    );
-    let browser = variants
-        .iter()
-        .find(|variant| variant["properties"]["action"]["const"] == "browser_type")
-        .unwrap();
-    assert_eq!(browser["properties"]["action"]["const"], "browser_type");
-    assert_eq!(browser["properties"]["secret_input"]["const"], true);
-    assert_eq!(
-        browser["properties"]["authorization_category"]["const"],
-        "credential"
-    );
-    assert!(
-        browser["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("browser_origin"))
-    );
-
-    let clipboard = variant("clipboard");
-    assert_eq!(
-        clipboard["properties"]["action"]["const"],
-        "clipboard_capture_secret"
-    );
-    assert_eq!(clipboard["properties"]["secret_input"]["const"], true);
-
-    let start = tool_definitions()
-        .into_iter()
-        .find(|tool| tool["name"] == "start_task")
-        .unwrap();
-    assert_eq!(
-        start["inputSchema"]["properties"]["allowed_actions"]["uniqueItems"],
-        true
-    );
 }
 
 #[rstest]

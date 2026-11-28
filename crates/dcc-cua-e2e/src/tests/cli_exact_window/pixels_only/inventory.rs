@@ -64,8 +64,10 @@ impl Contract {
                 Some(Lifetime::Driver)
             } else if label.is_some_and(|label| {
                 (window.identity.class == "DccCuaControlBanner" && window.identity.title == label)
-                    || (window.identity.class == "DccCuaControlFrame"
-                        && window.identity.title.is_empty())
+                    || (matches!(
+                        window.identity.class.as_str(),
+                        "DccCuaControlFrame" | "DccCuaExteriorControlFrame"
+                    ) && window.identity.title.is_empty())
             }) {
                 Some(Lifetime::Presenter)
             } else {
@@ -213,6 +215,7 @@ impl Contract {
             ) {
                 ("DccCuaControlBanner", title) if title == label => banner_count += 1,
                 ("DccCuaControlFrame", "") => frame_count += 1,
+                ("DccCuaExteriorControlFrame", "") => {}
                 _ => return Err("unexplained active owner resource"),
             }
             let thread = window.identity.thread;

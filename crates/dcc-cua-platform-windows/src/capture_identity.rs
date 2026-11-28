@@ -44,8 +44,8 @@ struct RootEnumeration {
 /// window belongs to the same executable, callers must use independently
 /// verified visible pixels or fail closed unless the WGC session was created
 /// from the exact HWND and retains the native instance/geometry fences for the
-/// whole capture. The core exact-window fallback is the sole narrowly-scoped
-/// caller of that latter exception.
+/// whole capture. Exact-window live observation and screenshot fallbacks use
+/// that latter exception only after binding the persistent source to the HWND.
 pub fn exact_window_capture_route(
     process_id: u32,
     window_handle: u64,

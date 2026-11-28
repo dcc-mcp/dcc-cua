@@ -72,10 +72,14 @@ impl TrustedTaskActionScope {
     /// Pixel actions whose native dispatch has the complete observation fence.
     pub const PIXELS_INPUT_ACTIONS: &'static [&'static str] = &[
         "click",
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        "move",
         "double_click",
         "right_click",
         "toggle",
         "drag",
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        "key_sequence",
         "keypress",
         "keyboard_shortcut",
         "type",
@@ -150,6 +154,8 @@ impl TrustedTaskActionScope {
         "set_text",
         "set_value",
         "set_checked",
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        "key_sequence",
         "keypress",
         "press",
         "press_key",
@@ -206,7 +212,8 @@ impl TrustedTaskActionScope {
                     && self.browser_origin.is_none()
             }
             "semantic" => {
-                Self::NATIVE_ACTIONS.contains(&self.action.as_str())
+                self.action != "key_sequence"
+                    && Self::NATIVE_ACTIONS.contains(&self.action.as_str())
                     && Self::SEMANTIC_CATEGORIES.contains(&self.authorization_category.as_str())
                     && (self.authorization_category != "task_grant" || !self.secret_input)
                     && self.browser_origin.is_none()

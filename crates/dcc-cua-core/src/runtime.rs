@@ -36,7 +36,11 @@ mod action_result;
 mod exact_capture;
 #[cfg(target_os = "linux")]
 mod linux_pixels;
+#[cfg(target_os = "macos")]
+mod macos_pixels;
 mod sdk_action_compat;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix_pixels;
 use exact_capture::*;
 #[cfg(windows)]
 pub(crate) use exact_capture::{
@@ -76,6 +80,8 @@ pub(crate) mod windows_held_key;
 mod windows_input;
 #[cfg(any(windows, test))]
 pub(crate) use windows_input::*;
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+mod pixel_input_policy;
 mod window_commands;
 #[cfg(any(windows, test))]
 mod windows_pixel_input;
@@ -439,9 +445,8 @@ pub(crate) fn banner_activity_for_action_phase(
         ActionBannerPhase::Preparing => BannerActivity::Operating,
         #[cfg(any(windows, test))]
         ActionBannerPhase::Injecting => match _action.action.as_str() {
-            "type" | "type_chars" | "set_text" | "set_value" | "keypress" | "keyboard_shortcut" => {
-                BannerActivity::KeyboardInput
-            }
+            "type" | "type_chars" | "set_text" | "set_value" | "key_sequence" | "keypress"
+            | "keyboard_shortcut" => BannerActivity::KeyboardInput,
             _ => BannerActivity::PointerInput,
         },
     }
@@ -1588,8 +1593,10 @@ struct LiveObservationStartOutcome {
 enum UpstreamSessionState {
     Inactive,
     Active,
-    #[cfg(target_os = "linux")]
-    LinuxPixelsOnly,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    UnixPixelsOnly {
+        input_available: bool,
+    },
     #[cfg(windows)]
     VisualOnly {
         reason: String,
@@ -1650,8 +1657,8 @@ pub struct ComputerUseSession {
     escalated: bool,
     pub(crate) uia_timeout_escalated: bool,
     pixel_observation_route: Option<PixelObservationRoute>,
-    #[cfg(target_os = "linux")]
-    linux_pixels: Option<linux_pixels::Handle>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unix_pixels: Option<unix_pixels::Handle>,
     #[cfg(feature = "test-support")]
     synthetic_test_session: bool,
 }

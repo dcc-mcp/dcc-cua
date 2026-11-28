@@ -1090,7 +1090,7 @@ continuations.
 `browser_navigate` defaults to `delivery_mode: "background"`, preserving the
 selected tab. Callers that require a visible switch must explicitly request
 `delivery_mode: "foreground"`; DCC applies its exact-window activation path
-and reports the activation result. Try CUA Driver 0.59.5 confirms
+and reports the activation result. Try CUA Driver 0.64.4 confirms
 dispatch and ref invalidation but does not provide DOM readback in its official
 navigation receipt, so `readback_state: "not_provided"` requires a fresh
 `browser_snapshot` for URL and page-state verification. A post-dispatch failure
@@ -1175,10 +1175,13 @@ See [plugin integration](docs/agent-plugin.md) and
 
 Use `dcc-cua connections` for a bounded, read-only JSON list of instrumented
 local MCP connections. Each client can also read its own
-`dcc-cua://connection/current` MCP resource. These report process creation
-identity, compiled runtime identity, client-provided metadata, task counts,
-and observed or inferred close reasons without starting a Host or touching UI.
-Older bridges and chat IDs not supplied by clients remain unknown. See
+`dcc-cua://connection/current` and `dcc-cua://connection/metrics` MCP
+resources. The first reports process creation identity, compiled runtime
+identity, client-provided metadata, task counts, and observed or inferred close
+reasons without starting a Host or touching UI. The second reports connection
+latency, protocol message bytes, estimated protocol tokens, explicitly
+reported model tokens, and post-snapshot reuse. Older bridges and chat IDs not
+supplied by clients remain unknown. See
 [connection diagnostics and lifecycle boundaries](docs/design/mcp-connection-diagnostics.md).
 
 For local IPC versus stdio, native readiness, and the limits of remote SDK

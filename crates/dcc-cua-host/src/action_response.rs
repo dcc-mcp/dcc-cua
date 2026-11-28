@@ -310,6 +310,7 @@ pub(super) fn action_completed_with_snapshot_response(
         post_snapshot["image"] = descriptor;
     }
     response["post_snapshot"] = post_snapshot;
+    response["observation_required"] = Value::Bool(false);
     Ok((response, attachment))
 }
 
@@ -340,6 +341,7 @@ pub(super) fn action_completed_with_accessibility_response(
         "root": accessibility,
         "node_count": node_count,
     });
+    response["observation_required"] = Value::Bool(false);
     Ok((response, attachment))
 }
 
@@ -373,5 +375,6 @@ pub(super) fn desktop_action_completed_with_snapshot_response(
         post_snapshot["image"] = descriptor;
     }
     response["post_snapshot"] = post_snapshot;
+    response["observation_required"] = Value::Bool(false);
     Ok((response, attachment))
 }

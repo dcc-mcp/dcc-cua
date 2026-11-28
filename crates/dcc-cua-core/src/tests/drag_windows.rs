@@ -102,10 +102,9 @@ fn implicit_combined_down_drag_rejects_unsupported_shapes_without_legacy_fallbac
 
     let mut multi_segment = action();
     multi_segment.path.push(ComputerUsePoint { x: 5.0, y: 6.0 });
-    assert!(
-        select_windows_foreground_drag_backend(&multi_segment)
-            .unwrap_err()
-            .contains("exactly two path points")
+    assert_eq!(
+        select_windows_foreground_drag_backend(&multi_segment).unwrap(),
+        WindowsForegroundDragBackend::CombinedDownDrag
     );
 }
 
@@ -231,10 +230,9 @@ fn combined_down_drag_route_is_left_foreground_and_two_point_only() {
 
     let mut multi_segment = action.clone();
     multi_segment.path.push(ComputerUsePoint { x: 5.0, y: 6.0 });
-    assert!(
-        select_windows_foreground_drag_backend(&multi_segment)
-            .unwrap_err()
-            .contains("exactly two path points")
+    assert_eq!(
+        select_windows_foreground_drag_backend(&multi_segment).unwrap(),
+        WindowsForegroundDragBackend::CombinedDownDrag
     );
 }
 

@@ -73,11 +73,10 @@ impl ComputerUseSession {
             let _banner_activity = self.begin_banner_activity(BannerActivity::Recording);
             let outcome = self
                 .ensure_live_observation(&ComputerUseLiveObservationStartRequest {
-                    fps: if self.recording_audio_grant.is_some() {
-                        30
-                    } else {
-                        10
-                    },
+                    // Video recording needs the same cadence with or without
+                    // the optional audio track. Ten fps makes pointer motion
+                    // and sculpting strokes visibly discontinuous.
+                    fps: 30,
                     ..Default::default()
                 })
                 .await?;

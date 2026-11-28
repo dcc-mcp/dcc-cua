@@ -7,25 +7,25 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Upstream synchronization status
 
-The latest published Try CUA Driver release is `cua-driver-rs-v0.60.0`,
-published on 2026-11-23. DCC CUA pins its immutable release commit
-`trycua/cua@7ebe6a662ea380d0b7a340a33ee59feaf8f56f43` across the runtime,
+The workspace tracks the upstream Try CUA Driver source tag `cua-driver-rs-v0.68.0`.
+DCC CUA pins its immutable release commit
+`trycua/cua@cb4f8dbe279c9f815efdef888ec938fb89bab8d6` across the runtime,
 platform adapters, cursor renderer, testkit and generated workspace-hack
 manifest.
 
-This update moves from the 0.49.1 compatibility fork to the official upstream
+The source update moves from Driver 0.60.0 to the official upstream 0.68.0
 release. The dependency contract, lockfile resolution, downstream compilation,
 formatting, linting and native acceptance remain required gates for delivery.
 
 ## Current source candidate
 
-The current source candidate is the official `trycua/cua` Driver 0.60.0
-release commit above. The prior `loonghao/cua` compatibility fork is retained
-in the historical record below for migration traceability.
+The current source candidate is the official `trycua/cua` Driver 0.68.0
+release commit above. The prior Driver 0.60.0 validation record and the older
+`loonghao/cua` compatibility history remain below for migration traceability.
 
-## Previous Driver 0.49.1 source and validation
+## Previous Driver 0.60.0 source and validation
 
-The merge preserved ancestor-scoped snapshot anchors, single-use continuations,
+The 0.60.0 update preserved ancestor-scoped snapshot anchors, single-use continuations,
 navigation/loader fences, unambiguous upload associations and owned Windows
 consent/cleanup. Its one CDP mock conflict retains upstream click readback and
 node-resolution failure behavior alongside the existing upload fixture. The

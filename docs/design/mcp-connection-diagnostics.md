@@ -142,11 +142,39 @@ environment override. A missing directory produces `registry_available: false`
 without creating it during a query. The current MCP resource remains readable
 from memory when publication is unavailable.
 
-MCP `resources/list` advertises `dcc-cua://connection/current`; `resources/read`
-returns only that server connection's in-memory record. An MCP caller cannot
-enumerate other connections through this resource. The local `connections`
-command reads the registry without starting a Host, requesting a task grant,
-changing processes, or cleaning records.
+MCP `resources/list` advertises `dcc-cua://connection/current` and
+`dcc-cua://connection/metrics`. `resources/read` returns only the current
+server connection's in-memory record or its connection-scoped performance
+report. An MCP caller cannot enumerate other connections through these
+resources. The local `connections` command reads the registry without starting
+a Host, requesting a task grant, changing processes, or cleaning records.
+
+The performance report uses schema `dcc-cua.mcp-performance.v1`. It includes
+transport and tool latency totals and maxima, UTF-8 message bytes, estimated
+protocol tokens, exact model usage reported by the Agent Host, standalone
+snapshot count, post-action snapshot count, and post-snapshot reuse count.
+Protocol token counts use `ceil(UTF-8 bytes / 4)` and are estimates. Exact
+model usage can be sent with the one-way
+`notifications/dcc-cua/model_usage` notification or recorded through the
+`dcc_cua_record_model_usage` tool. The report stores aggregates only and does
+not retain prompts, responses, task arguments, coordinates, paths, or pixels.
+
+Forward each completed model call's provider usage once on the same MCP
+connection. Supply `cached_input_tokens` and `model_elapsed_ms` only when the
+Host measured them. Keep task wall time on its own outcome notification.
+Send each JSON-RPC notification on its own line.
+
+```jsonl
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/model_usage","params":{"input_tokens":1200,"cached_input_tokens":800,"output_tokens":72,"model_elapsed_ms":640}}
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/task_outcome","params":{"success":true,"elapsed_ms":2480}}
+```
+
+Read `dcc_cua_metrics` after the notifications. Compare
+`transport.output_image_base64_bytes_total` with `transport.output_other_bytes_total`
+to locate image traffic. Check `observations.post_snapshot_reuses_total` against
+`observations.post_action_snapshots_total`. The `model_tokens.available` field
+indicates whether the Host reported usage. Cache and latency counters include
+only calls that supplied those measurements.
 
 Reports scan at most 1,024 directory entries, accept at most 64 KiB per record,
 return at most 256 records, and tolerate unreadable or malformed records. A

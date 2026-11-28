@@ -462,7 +462,6 @@ fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] cl
         "dcc-cua-task-automation"
     );
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4);
     assert_eq!(
         tools
             .iter()
@@ -472,6 +471,8 @@ fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] cl
             "start_task",
             "task_status",
             "stop_task",
+            "dcc_cua_metrics",
+            "dcc_cua_record_model_usage",
             "dcc_cua_task_call"
         ]
     );

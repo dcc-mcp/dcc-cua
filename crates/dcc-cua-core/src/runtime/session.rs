@@ -12,6 +12,7 @@ pub(crate) use gates::{
     gated_upstream_session_refresh, preflight_live_observation_start,
 };
 use input_target_policy::reject_ambiguous_embedded_browser_navigation;
+mod banner;
 mod browser;
 pub(super) use browser::BROWSER_TOOL_CALL_TIMEOUT;
 mod capture_preparation;
@@ -19,14 +20,14 @@ mod error_contracts;
 mod native_recording;
 #[cfg(any(windows, test))]
 pub(crate) use capture_preparation::preparation_error as map_capture_preparation_error;
-#[cfg(target_os = "linux")]
-mod linux_pixels;
 mod observation;
 mod pixel_start;
 #[cfg(windows)]
 mod semantic_activation;
 #[cfg(test)]
 mod tests;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix_pixels;
 mod window_restore;
 use error_contracts::*;
 
@@ -148,8 +149,8 @@ impl ComputerUseSession {
             escalated: false,
             uia_timeout_escalated: false,
             pixel_observation_route: None,
-            #[cfg(target_os = "linux")]
-            linux_pixels: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            unix_pixels: None,
             #[cfg(feature = "test-support")]
             synthetic_test_session: false,
         })
@@ -179,8 +180,8 @@ impl ComputerUseSession {
                 "window session is already active",
             ));
         }
-        #[cfg(target_os = "linux")]
-        self.drain_linux_pixels().await;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.drain_unix_pixels().await;
         self.pixel_observation_route = None;
         request.validate_for_scope(&self.scope)?;
         let target = self.resolve_target().await?;
@@ -578,7 +579,10 @@ impl ComputerUseSession {
 
         let live_observation = match self
             .ensure_live_observation(&ComputerUseLiveObservationStartRequest {
-                fps: 10,
+                // A recording stream is a media source. Keep it at video
+                // cadence instead of inheriting the lightweight observation
+                // default.
+                fps: 30,
                 ..Default::default()
             })
             .await
@@ -748,9 +752,25 @@ impl ComputerUseSession {
         &mut self,
         action: &ComputerUseAction,
     ) -> ComputerUseResult<ComputerUseToolResult> {
+        self.perform_action_with_deadline(action, None).await
+    }
+
+    /// Apply a trusted task deadline to native timeline dispatch. The deadline
+    /// comes from the Host lease, never from the requested action payload.
+    pub async fn perform_action_with_deadline(
+        &mut self,
+        action: &ComputerUseAction,
+        authorization_deadline: Option<Instant>,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        if action.action == "key_sequence" && authorization_deadline.is_none() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "key_sequence requires a trusted task deadline",
+            ));
+        }
         #[cfg(windows)]
         let capture_popup_metadata = self.capture_popup_metadata.take();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         let pixel_started_generation = dcc_cua_interrupt::interrupt_generation();
         self.ensure_active()?;
         let _preparing_activity = self.begin_banner_activity(banner_activity_for_action_phase(
@@ -762,7 +782,19 @@ impl ComputerUseSession {
             self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
         #[cfg(not(windows))]
         let exact_windows_pixels = false;
-        validate_action_route(action, exact_windows_pixels)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let unix_input = matches!(
+            self.upstream_session_state,
+            UpstreamSessionState::UnixPixelsOnly {
+                input_available: true
+            }
+        ) && matches!(
+            action.action.as_str(),
+            "move" | "click" | "drag" | "key_sequence"
+        );
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let unix_input = false;
+        validate_action_route(action, exact_windows_pixels || unix_input)?;
         validate_window_action_coordinates(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
@@ -775,6 +807,17 @@ impl ComputerUseSession {
                 ComputerUseErrorCode::StaleObservation,
                 "action observation_id does not match the latest screenshot",
             ));
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if unix_input {
+            return self
+                .guarded_unix_action(
+                    action,
+                    observation,
+                    authorization_deadline,
+                    pixel_started_generation,
+                )
+                .await;
         }
         if self.action_requires_current_upstream_evidence(action, &observation) {
             self.require_current_upstream_session_for_evidence()?;
@@ -815,7 +858,7 @@ impl ComputerUseSession {
                     &self.scope,
                     &self.session_id,
                     &target,
-                    self.pixel_input_owner(pixel_started_generation)?,
+                    self.pixel_input_owner(pixel_started_generation, authorization_deadline)?,
                     capture_popup,
                 )
                 .await;
@@ -1266,8 +1309,8 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_input_available(&mut self) -> ComputerUseResult<()> {
-        #[cfg(target_os = "linux")]
-        self.require_not_linux_pixels()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.require_not_read_only_pixels()?;
         self.require_capture_preparation_settled()?;
         #[cfg(feature = "test-support")]
         if self.synthetic_test_session {
@@ -1278,8 +1321,8 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_window_activation_available(&mut self) -> ComputerUseResult<()> {
-        #[cfg(target_os = "linux")]
-        self.require_not_linux_pixels()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.require_not_read_only_pixels()?;
         self.require_capture_preparation_settled()?;
         let result = interactive_desktop::require_window_activation_available();
         self.finish_observed_input_gate(result)
@@ -1344,8 +1387,8 @@ impl ComputerUseSession {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
-        #[cfg(target_os = "linux")]
-        self.require_not_linux_pixels()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.require_not_read_only_pixels()?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1368,8 +1411,8 @@ impl ComputerUseSession {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
-        #[cfg(target_os = "linux")]
-        self.require_not_linux_pixels()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.require_not_read_only_pixels()?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1458,8 +1501,8 @@ impl ComputerUseSession {
         // or the process-global upstream recording lease.
         self.active = false;
         self.upstream_session_state = UpstreamSessionState::Inactive;
-        #[cfg(target_os = "linux")]
-        self.drain_linux_pixels().await;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.drain_unix_pixels().await;
         self.pixel_observation_route = None;
         self.last_upstream_session_refresh = None;
         self.marker.visible = false;
@@ -1516,8 +1559,8 @@ impl ComputerUseSession {
     }
 
     fn ensure_local_cleanup_reusable(&self) -> ComputerUseResult<()> {
-        #[cfg(target_os = "linux")]
-        self.require_linux_cleanup_settled()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.require_unix_cleanup_settled()?;
         if self.local_cleanup.pending() || !self.local_cleanup.issues.is_empty() {
             return Err(ComputerUseError::new(
                 if self.local_cleanup.pending() {
@@ -1668,80 +1711,6 @@ impl ComputerUseSession {
     /// Return the last CUA-validated exact target without exposing mutable state.
     pub fn target(&self) -> Option<Value> {
         self.target.as_ref().map(|target| json!(target))
-    }
-
-    pub fn banner_status(&self) -> Value {
-        if self
-            .live_observation
-            .as_ref()
-            .is_some_and(|observation| !observation.is_active())
-        {
-            self.set_banner_live_observation(false);
-        }
-        self.control_banner.as_ref().map_or_else(
-            || {
-                json!({
-                    "backend": "unavailable",
-                    "healthy": false,
-                    "running": false,
-                    "last_error": "control banner is not running",
-                    "failure": {
-                        "kind": "backend",
-                        "message": "control banner is not running",
-                    },
-                    "visible": false,
-                    "target_frame_visible": false,
-                    "interrupted": false,
-                    "stop_key": "Escape",
-                    "activity": "stopping",
-                    "activity_label": "Stopping…",
-                    "recording": false,
-                    "live_observation": false,
-                    "placement": "unavailable",
-                })
-            },
-            |banner| json!(banner.status()),
-        )
-    }
-
-    pub fn control_banner_interrupted(&self) -> bool {
-        self.control_banner
-            .as_ref()
-            .is_some_and(ControlBanner::interrupted)
-    }
-
-    pub fn control_banner_failure(&self) -> Option<ComputerUseError> {
-        let failure = self.control_banner.as_ref()?.failure()?;
-        let code = match failure.kind {
-            BannerFailureKind::TargetLost => ComputerUseErrorCode::InvalidTarget,
-            BannerFailureKind::Backend => ComputerUseErrorCode::BackendUnavailable,
-            BannerFailureKind::Rendering => return None,
-        };
-        Some(ComputerUseError::new(code, failure.message))
-    }
-
-    pub fn set_banner_activity(&self, activity: BannerActivity) {
-        if let Some(banner) = &self.control_banner {
-            banner.set_activity(activity);
-        }
-    }
-
-    fn begin_banner_activity(&self, activity: BannerActivity) -> Option<BannerActivityGuard> {
-        self.control_banner
-            .as_ref()
-            .map(|banner| banner.begin_activity(activity))
-    }
-
-    fn set_banner_recording(&self, recording: bool) {
-        if let Some(banner) = &self.control_banner {
-            banner.set_recording(recording);
-        }
-    }
-
-    fn set_banner_live_observation(&self, live_observation: bool) {
-        if let Some(banner) = &self.control_banner {
-            banner.set_live_observation(live_observation);
-        }
     }
 
     /// Revalidate and return the current exact-window state.
@@ -2104,11 +2073,11 @@ impl ComputerUseSession {
             self.validate_target_policy(&target)?;
             return Ok(target);
         }
-        #[cfg(target_os = "linux")]
-        if let Some(handle) = &self.linux_pixels {
-            return crate::runtime::linux_pixels::operate(
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(handle) = &self.unix_pixels {
+            return crate::runtime::unix_pixels::operate(
                 handle.clone(),
-                crate::runtime::linux_pixels::LinuxPixels::target,
+                crate::runtime::unix_pixels::NativePixels::target,
             )
             .await;
         }

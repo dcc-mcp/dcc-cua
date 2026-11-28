@@ -49,6 +49,7 @@ pub enum WindowsPhysicalInputFailureReason {
     DesktopUnavailable,
     InjectionIncomplete,
     Interrupted,
+    ExecutionFrameUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -57,7 +58,17 @@ pub enum WindowsGuardedInputOperation {
     Click,
     Drag,
     Keypress,
+    KeySequence,
     Text,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct KeySequenceTiming {
+    pub steps: usize,
+    /// From the first chord's foreground check through the last insertion.
+    pub dispatch_ms: u64,
+    /// Wall time spent in inter-chord sleeps, including scheduler delays.
+    pub inter_step_wait_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -73,6 +84,8 @@ pub struct WindowsGuardedInputOutcome {
     pub delivery_completed: bool,
     pub post_dispatch_validated: bool,
     pub fresh_observation_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_sequence_timing: Option<KeySequenceTiming>,
 }
 
 impl WindowsGuardedInputOutcome {
@@ -89,6 +102,7 @@ impl WindowsGuardedInputOutcome {
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         }
     }
 }
@@ -708,6 +722,81 @@ fn run_keypress<B: InputBackend>(
     transaction.finish(result)
 }
 
+// Validate the entire timeline before the first native event. Each chord is
+// released before the next tap, including when adjacent keys are identical.
+fn sequence_chord(step: &str) -> Result<Vec<Event>, Reason> {
+    if step.len() > 64 {
+        return Err(Reason::InvalidRequest);
+    }
+    let mut parts = step.split('+').map(str::trim).collect::<Vec<_>>();
+    let key = virtual_key(parts.pop().ok_or(Reason::InvalidRequest)?)
+        .map_err(|_| Reason::InvalidRequest)?;
+    if parts.len() > 3 {
+        return Err(Reason::InvalidRequest);
+    }
+    let mut keys = Vec::new();
+    for part in parts {
+        let modifier = modifier_virtual_key(part).ok_or(Reason::InvalidRequest)?;
+        if keys.contains(&modifier) || modifier == key {
+            return Err(Reason::InvalidRequest);
+        }
+        keys.push(modifier);
+    }
+    keys.push(key);
+    Ok(keys
+        .iter()
+        .map(|&key| Event::Key(key, false))
+        .chain(keys.iter().rev().map(|&key| Event::Key(key, true)))
+        .collect())
+}
+
+fn run_key_sequence<B: InputBackend>(
+    backend: &mut B,
+    fence: WindowsPhysicalInputFence,
+    steps: &[String],
+    delay_ms: u64,
+    mut frame_visible: impl FnMut() -> bool,
+) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+    let mut transaction = Transaction {
+        backend,
+        fence,
+        point: None,
+        outcome: WindowsGuardedInputOutcome::new(WindowsGuardedInputOperation::KeySequence),
+        pending_releases: Vec::new(),
+    };
+    let result = (|| {
+        if !(1..=64).contains(&steps.len()) || delay_ms > 200 {
+            return Err(Reason::InvalidRequest);
+        }
+        let timeline = steps
+            .iter()
+            .map(|step| sequence_chord(step))
+            .collect::<Result<Vec<_>, _>>()?;
+        let started = transaction.backend.elapsed_ms();
+        let mut inter_step_wait_ms = 0;
+        for (index, chord) in timeline.iter().enumerate() {
+            if index > 0 && delay_ms != 0 {
+                let before_pause = transaction.backend.elapsed_ms();
+                transaction.backend.pause(delay_ms);
+                inter_step_wait_ms += transaction.backend.elapsed_ms() - before_pause;
+            }
+            // mutate rechecks the exact foreground, visibility and interruption
+            // immediately before inserting the down/up events of this chord.
+            if !frame_visible() {
+                return Err(Reason::ExecutionFrameUnavailable);
+            }
+            transaction.mutate(chord, None)?;
+        }
+        transaction.outcome.key_sequence_timing = Some(KeySequenceTiming {
+            steps: timeline.len(),
+            dispatch_ms: transaction.backend.elapsed_ms() - started,
+            inter_step_wait_ms,
+        });
+        Ok(())
+    })();
+    transaction.finish(result)
+}
+
 fn text_events(text: &str) -> Result<Vec<Event>, Reason> {
     if text.is_empty() || text.encode_utf16().count() > 4096 {
         return Err(Reason::InvalidRequest);
@@ -820,6 +909,22 @@ pub fn send_guarded_keypress(
         input_available,
         interrupted,
         |backend| run_keypress(backend, fence, keys, hold_duration_ms),
+    )
+}
+
+pub fn send_guarded_key_sequence(
+    fence: WindowsPhysicalInputFence,
+    steps: &[String],
+    delay_ms: u64,
+    frame_visible: impl FnMut() -> bool,
+    input_available: impl FnMut() -> Result<(), UiaError>,
+    interrupted: impl FnMut() -> bool,
+) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+    with_native_backend(
+        WindowsGuardedInputOperation::KeySequence,
+        input_available,
+        interrupted,
+        |backend| run_key_sequence(backend, fence, steps, delay_ms, frame_visible),
     )
 }
 

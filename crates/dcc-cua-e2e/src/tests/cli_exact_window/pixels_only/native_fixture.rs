@@ -7,13 +7,14 @@ use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::Graphics::Gdi::{GetStockObject, WHITE_BRUSH};
+use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, FillRect, GetStockObject, WHITE_BRUSH};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 #[derive(Default)]
 pub(super) struct Probe {
+    blocker: AtomicUsize,
     pub provider_requests: AtomicUsize,
     pub activation_or_input: AtomicUsize,
     pub key_events: Mutex<Vec<(u64, u32, usize)>>,
@@ -27,6 +28,14 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
     let probe = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Probe;
     if !probe.is_null() {
         let probe = unsafe { &*probe };
+        if message == WM_ERASEBKGND && probe.blocker.load(Ordering::Relaxed) == hwnd as usize {
+            let mut rect = RECT::default();
+            unsafe {
+                GetClientRect(hwnd, &mut rect);
+                FillRect(w as _, &rect, GetStockObject(BLACK_BRUSH) as _);
+            }
+            return 1;
+        }
         if matches!(message, WM_KEYDOWN | WM_KEYUP) {
             probe
                 .key_events
@@ -178,6 +187,9 @@ impl Fixture {
             let target = create("pixels-only custom target", 80, true);
             let decoy = create("pixels-only custom decoy", 420, true);
             let blocker = create("pixels-only capture blocker", 80, false);
+            window_probe
+                .blocker
+                .store(blocker as usize, Ordering::Relaxed);
             tx.send((
                 target as usize as u64,
                 decoy as usize as u64,

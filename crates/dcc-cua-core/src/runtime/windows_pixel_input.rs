@@ -1,117 +1,10 @@
 //! Explicit pixel input uses only local, final-boundary native dispatchers.
 use super::*;
 
-pub(super) fn validate_pixel_interrupt(
-    started: u64,
-    current: u64,
-    latched: bool,
-) -> ComputerUseResult<()> {
-    if latched || dcc_cua_interrupt::interrupt_generation_changed(started, current) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::UserInterrupted,
-            "pixel input was interrupted before native dispatch",
-        )
-        .with_details(ComputerUseErrorDetails {
-            phase: Some(ComputerUseErrorPhase::PreDispatch),
-            action_attempted: Some(false),
-            input_sent: Some(ComputerUseInputState::NotSent),
-            completion: Some(ComputerUseCompletionState::Known),
-            effect_unknown: Some(false),
-            blind_retry: Some(false),
-            fresh_observation_required: Some(true),
-            ..Default::default()
-        }));
-    }
-    Ok(())
-}
+#[cfg(windows)]
+const DEFAULT_PIXEL_DRAG_DURATION_MS: u64 = 160;
 
-fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
-    if !matches!(
-        action.action.as_str(),
-        "click"
-            | "double_click"
-            | "right_click"
-            | "toggle"
-            | "drag"
-            | "keypress"
-            | "keyboard_shortcut"
-            | "type"
-            | "type_chars"
-    ) || action.element_index.is_some()
-        || action.element_token.is_some()
-        || action.input_backend_id.is_some()
-        || action
-            .delivery_mode
-            .as_deref()
-            .is_some_and(|mode| mode != "foreground")
-        || (action.action != "drag" && !action.path.is_empty())
-        || action.scroll_x.is_some()
-        || action.scroll_y.is_some()
-        || action.scroll_by.is_some()
-        || (action.action != "drag" && action.steps.is_some())
-        || action.delay_ms.is_some_and(|delay| delay != 0)
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "pixels_only requires a covered foreground pointer, keypress or text action without semantic selectors or alternate input backends",
-        ));
-    }
-    let click = matches!(
-        action.action.as_str(),
-        "click" | "double_click" | "right_click" | "toggle"
-    );
-    let drag = action.action == "drag";
-    if drag
-        && (action.path.len() != 2
-            || action.x.is_some()
-            || action.y.is_some()
-            || !action.keys.is_empty()
-            || !action.modifiers.is_empty()
-            || action.text.is_some()
-            || action.type_chars_only
-            || action
-                .duration_ms
-                .is_some_and(|duration| duration == 0 || duration > MAX_DRAG_DURATION_MS)
-            || action
-                .steps
-                .is_some_and(|steps| !(1..=MAX_DRAG_STEPS).contains(&steps))
-            || action
-                .path
-                .iter()
-                .any(|point| !point.x.is_finite() || !point.y.is_finite()))
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "pixels_only drag requires two endpoints, a bounded duration/steps, and no keyboard or semantic fields",
-        ));
-    }
-    if click && (action.duration_ms.is_some() || action.x.is_none() || action.y.is_none()) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "pixels_only clicks require screenshot coordinates and do not support held buttons",
-        ));
-    }
-    if !click && !drag && (action.x.is_some() || action.y.is_some() || action.button.is_some()) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "pixels_only keypress and text actions use the existing exact foreground focus",
-        ));
-    }
-    let text = matches!(action.action.as_str(), "type" | "type_chars");
-    if (text
-        && (!action.keys.is_empty()
-            || !action.modifiers.is_empty()
-            || action.duration_ms.is_some()))
-        || (!text && (action.text.is_some() || action.type_chars_only))
-        || (click && !action.keys.is_empty())
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "pixel input fields must belong to the requested physical operation",
-        ));
-    }
-    Ok(())
-}
+pub(super) use super::pixel_input_policy::{validate_pixel_action, validate_pixel_interrupt};
 
 #[cfg(windows)]
 fn input_fence(
@@ -205,25 +98,43 @@ fn physical_drag_points(
     observation: &ComputerUseObservation,
 ) -> ComputerUseResult<Vec<(i32, i32)>> {
     validate_pixel_action(action)?;
-    let [start, end] = action.path.as_slice() else {
+    if action.path.len() > 2 && action.steps.is_some() {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "drag requires two endpoints",
+            "steps is only supported for a two-point drag path",
         ));
-    };
-    let steps = action.steps.unwrap_or(20);
-    let mut sample = action.clone();
-    let mut points = Vec::with_capacity(steps as usize + 1);
-    for index in 0..=steps {
-        let fraction = f64::from(index) / f64::from(steps);
-        sample.x = Some(start.x + (end.x - start.x) * fraction);
-        sample.y = Some(start.y + (end.y - start.y) * fraction);
-        points.push(physical_point(&sample, observation)?);
     }
-    if points.first() == points.last() {
+    let mut points = if action.path.len() == 2 {
+        let [start, end] = action.path.as_slice() else {
+            unreachable!("path length was checked");
+        };
+        let steps = action.steps.unwrap_or(20);
+        let mut sample = action.clone();
+        let mut points = Vec::with_capacity(steps as usize + 1);
+        for index in 0..=steps {
+            let fraction = f64::from(index) / f64::from(steps);
+            sample.x = Some(start.x + (end.x - start.x) * fraction);
+            sample.y = Some(start.y + (end.y - start.y) * fraction);
+            points.push(physical_point(&sample, observation)?);
+        }
+        points
+    } else {
+        action
+            .path
+            .iter()
+            .map(|point| {
+                let mut sample = action.clone();
+                sample.x = Some(point.x);
+                sample.y = Some(point.y);
+                physical_point(&sample, observation)
+            })
+            .collect::<ComputerUseResult<Vec<_>>>()?
+    };
+    points.dedup();
+    if points.len() < 2 {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "drag endpoints must be distinct physical pixels",
+            "drag trajectory must contain two distinct physical pixels",
         ));
     }
     // Also refuse a redacted rectangle between samples; a sparse caller path
@@ -330,6 +241,7 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
         | Reason::TargetOutsideDesktop => ComputerUseErrorCode::TargetUnavailable,
         Reason::DesktopUnavailable => ComputerUseErrorCode::InteractiveDesktopUnavailable,
         Reason::Interrupted => ComputerUseErrorCode::UserInterrupted,
+        Reason::ExecutionFrameUnavailable => ComputerUseErrorCode::BackendUnavailable,
         Reason::InjectionIncomplete => ComputerUseErrorCode::InputFailed,
     };
     let attempted = failure.outcome.mutation_attempted;
@@ -386,6 +298,7 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
 
 #[cfg(windows)]
 pub(super) struct PixelInputOwner {
+    authorization_deadline: Option<Instant>,
     started_generation: u64,
     session_interrupted: bool,
     presentation: dcc_cua_indicator::BannerInputSuppressionSource,
@@ -396,6 +309,7 @@ impl ComputerUseSession {
     pub(super) fn pixel_input_owner(
         &self,
         started_generation: u64,
+        authorization_deadline: Option<Instant>,
     ) -> ComputerUseResult<PixelInputOwner> {
         let banner = self.control_banner.as_ref().ok_or_else(|| {
             ComputerUseError::new(
@@ -404,6 +318,7 @@ impl ComputerUseSession {
             )
         })?;
         Ok(PixelInputOwner {
+            authorization_deadline,
             started_generation,
             session_interrupted: self.control_banner_interrupted(),
             presentation: banner.input_suppression_source(),
@@ -422,6 +337,7 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
     capture_popup: Option<super::capture_popup::CapturePopupMetadata>,
 ) -> ComputerUseResult<ComputerUseToolResult> {
     let PixelInputOwner {
+        authorization_deadline,
         started_generation,
         session_interrupted,
         presentation,
@@ -449,16 +365,28 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
         Vec::new()
     };
     let input_presentation = presentation.clone();
+    let require_execution_frame = action.action == "key_sequence";
     let outcome = run_owned_pixel_worker(
         move || {
             // The worker, not its cancellable async waiter, owns both leases
             // through every final fence, native key-up cleanup and postcheck.
-            presentation
+            let guard = presentation
                 .begin_with_capture(fence.target.process_id, fence.target.window_handle)
-                .map_err(pixel_presentation_error)
+                .map_err(pixel_presentation_error)?;
+            if require_execution_frame && !presentation.execution_frame_visible() {
+                return Err(pixel_presentation_error(IndicatorError::Rendering(
+                    "the agent execution frame is unavailable; the foreground target needs a visible exterior edge for a key sequence".into(),
+                )));
+            }
+            Ok(guard)
         },
         move || {
             let gate = || {
+                if authorization_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return Err(dcc_cua_platform_windows::UiaError::PermissionDenied(
+                        "task lease expired during native input".into(),
+                    ));
+                }
                 if capture_popup.as_ref().is_some_and(|metadata| {
                     metadata.read_at.elapsed() > Duration::from_secs(5)
                         || Instant::now() >= metadata.authorization_deadline
@@ -514,12 +442,20 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
                     dcc_cua_platform_windows::send_guarded_drag(
                         fence,
                         &drag_points,
-                        action.duration_ms.unwrap_or(500),
+                        action.duration_ms.unwrap_or(DEFAULT_PIXEL_DRAG_DURATION_MS),
                         button,
                         gate,
                         interrupted,
                     )
                 }
+                "key_sequence" => dcc_cua_platform_windows::send_guarded_key_sequence(
+                    fence,
+                    &action.keys,
+                    action.delay_ms.unwrap_or(40),
+                    || input_presentation.execution_frame_visible(),
+                    gate,
+                    interrupted,
+                ),
                 "keypress" | "keyboard_shortcut" => {
                     let keys = keyboard_shortcut_keys(&action);
                     if let Some(metadata) = &capture_popup {

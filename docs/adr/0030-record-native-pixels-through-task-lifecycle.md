@@ -68,12 +68,31 @@ A frame prepared before subscription cannot stand in for a different encoded
 first frame.
 
 The producer reuses exact native capture and publication guards on every frame.
-Identity replacement is terminal; minimized or occluded targets pause/refuse
-publication. Pause fences survive conflated watch updates. Resume requires a
-fresh frame and creates a new encoded segment; paused time is not filled with a
-stale frame. The sidecar retains per-sample source sequence, geometry, provenance,
-and segment identity. Unavailable WGC timing remains unavailable. Pixels are not
-color-corrected or assigned a guessed origin by the recording lifecycle.
+Identity replacement is terminal; minimized targets pause or refuse publication.
+Occluded targets can use compositor-backed window content capture, while desktop
+crops still require the native unobscured-window proof. Pause fences survive
+conflated watch updates. Resume requires a fresh frame and creates a new encoded
+segment; paused time is not filled with a stale frame. The sidecar retains
+per-sample source sequence, geometry, provenance, and segment identity.
+Unavailable WGC timing remains unavailable. Pixels are not color-corrected or
+assigned a guessed origin by the recording lifecycle.
+
+## Platform-owned window content capture
+
+Core requests the `WindowContent` capture mode through the platform adapter and
+does not call a desktop API directly. Windows prefers persistent WGC for the
+recording path. One-shot exact-window capture can fall back to the HWND-owned
+`PrintWindow(PW_RENDERFULLCONTENT)` adapter, which renders into a private
+bitmap without copying the visible desktop. The result carries an explicit
+`print_window` source, exact Win32 bounds, process/HWND instance evidence, and
+the same before/after publication fence as WGC. Applications may decline or
+incompletely implement WM_PRINT, so the adapter remains capability-driven and
+the WGC or verified desktop route remains available.
+
+Linux and macOS adapters can implement the same platform-neutral window-content
+contract with their native compositor or window-rendering facilities. No
+Win32 symbol crosses into Core, and no platform is required to claim support
+without a runtime capability result.
 
 ## Stop and failures
 

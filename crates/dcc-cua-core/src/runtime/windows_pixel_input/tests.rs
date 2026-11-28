@@ -224,6 +224,7 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         },
     });
     let details = error.details.unwrap();
@@ -263,6 +264,7 @@ fn rejected_fence_diagnostic_reaches_closed_error_details_with_original_refusal(
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         },
         native_input_fence: Some(sample),
         native_capture_popup: None,
@@ -319,6 +321,7 @@ fn popup_proof_refusal_uses_existing_capture_details_and_preserves_zero_input(
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         },
         native_input_fence: None,
         visibility_failure: None,
@@ -408,7 +411,6 @@ fn drag_action() -> ComputerUseAction {
 
 #[rstest]
 #[case("empty")]
-#[case("extra_point")]
 #[case("coordinates")]
 #[case("keys")]
 #[case("modifiers")]
@@ -422,7 +424,6 @@ fn pixel_drag_rejects_unbounded_or_mixed_action_fields(#[case] variant: &str) {
     let mut action = drag_action();
     match variant {
         "empty" => action.path.clear(),
-        "extra_point" => action.path.push(ComputerUsePoint { x: 2.0, y: 2.0 }),
         "coordinates" => action.x = Some(1.0),
         "keys" => action.keys.push("shift".into()),
         "modifiers" => action.modifiers.push("shift".into()),
@@ -440,9 +441,29 @@ fn pixel_drag_rejects_unbounded_or_mixed_action_fields(#[case] variant: &str) {
     );
 }
 
+#[rstest]
+fn pixel_drag_accepts_a_sampled_brush_trajectory() {
+    let mut action = drag_action();
+    action.path.insert(1, ComputerUsePoint { x: 42.0, y: 31.0 });
+    validate_pixel_action(&action)
+        .expect("one guarded raw-input action may carry a sampled brush trajectory");
+}
+
+#[rstest]
+fn pixel_drag_rejects_interpolation_steps_for_a_sampled_trajectory() {
+    let mut action = drag_action();
+    action.path.insert(1, ComputerUsePoint { x: 42.0, y: 31.0 });
+    action.steps = Some(2);
+    assert_eq!(
+        validate_pixel_action(&action).unwrap_err().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
 #[cfg(windows)]
 #[rstest]
 #[case("valid", true)]
+#[case("closed_loop", true)]
 #[case("outside", false)]
 #[case("same_pixel", false)]
 #[case("redacted_sample", false)]
@@ -458,6 +479,10 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
     action.steps = Some(1);
     let mut observation = observed();
     match variant {
+        "closed_loop" => {
+            action.steps = None;
+            action.path.push(action.path[0]);
+        }
         "outside" => action.path[1].x = 400.0,
         "same_pixel" => action.path[1] = ComputerUsePoint { x: 10.9, y: 20.1 },
         "redacted_sample" => {
@@ -482,8 +507,25 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
     let result = physical_drag_points(&action, &observation);
     assert_eq!(result.is_ok(), accepted);
     if accepted {
-        assert_eq!(result.unwrap(), vec![(-290, 100), (-190, 140)]);
+        let mut expected = vec![(-290, 100), (-190, 140)];
+        if variant == "closed_loop" {
+            expected.push(expected[0]);
+        }
+        assert_eq!(result.unwrap(), expected);
     }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn pixel_drag_preserves_sampled_waypoints() {
+    let mut action = drag_action();
+    action.path = vec![
+        ComputerUsePoint { x: 10.0, y: 20.0 },
+        ComputerUsePoint { x: 42.0, y: 31.0 },
+        ComputerUsePoint { x: 110.0, y: 60.0 },
+    ];
+    let points = physical_drag_points(&action, &observed()).expect("sampled path is valid");
+    assert_eq!(points, vec![(-290, 100), (-258, 111), (-190, 140)]);
 }
 
 #[rstest]

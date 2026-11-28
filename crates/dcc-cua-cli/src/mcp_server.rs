@@ -1,3 +1,5 @@
+mod schema;
+use schema::tool_definitions;
 mod recording_audio;
 use recording_audio::bind_recording_request;
 mod task_payload;
@@ -6,6 +8,7 @@ mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
 mod owned_host;
+mod performance;
 mod start_contract;
 mod transport;
 mod workflows;
@@ -14,7 +17,7 @@ use transport::run_transport;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dcc_cua_client::{HostClient, HostClientError, LogicalTaskSession, SnapshotTransport};
@@ -45,11 +48,16 @@ use super::connection_diagnostics::{
     RuntimeBuildIdentity, TaskCounts,
 };
 
+use performance::McpPerformance;
+
+const PERFORMANCE_RESOURCE_URI: &str = "dcc-cua://connection/metrics";
+
 const SERVER_NAME: &str = "dcc-cua-task-automation";
 const MAX_PENDING_TASKS: usize = 64;
 const MAX_TTL_MINUTES: u64 = 24 * 60;
 const DEFAULT_TTL_MINUTES: u64 = 60;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
+const TASK_STARTUP_TIMEOUT_MS: u64 = 15_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
 
@@ -294,6 +302,7 @@ struct TaskAuthorizationServer {
     recording_output_root: Option<std::path::PathBuf>,
     capture_preparation_journal_root: Option<std::path::PathBuf>,
     diagnostics: Option<ConnectionDiagnostics>,
+    performance: McpPerformance,
 }
 
 impl TaskAuthorizationServer {
@@ -315,6 +324,7 @@ impl TaskAuthorizationServer {
             )
             .map(Into::into),
             diagnostics: None,
+            performance: McpPerformance::new(),
         }
     }
 
@@ -324,9 +334,18 @@ impl TaskAuthorizationServer {
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             return Some(rpc_error(id, -32600, "Invalid Request"));
         };
+        if method == "notifications/dcc-cua/model_usage" {
+            self.performance.record_model_usage_notification(&message);
+            return None;
+        }
+        if method == "notifications/dcc-cua/task_outcome" {
+            self.performance.record_task_outcome(&message["params"]);
+            return None;
+        }
         if method.starts_with("notifications/") || method == "$/cancelRequest" {
             return None;
         }
+        self.performance.record_model_usage_message(&message);
         let params = message
             .get("params")
             .filter(|value| value.is_object())
@@ -361,6 +380,11 @@ impl TaskAuthorizationServer {
                 "name": "dcc-cua-connection",
                 "description": "Read-only diagnostics for this MCP connection; client identifiers are self-reported.",
                 "mimeType": "application/json"
+            }, {
+                "uri": PERFORMANCE_RESOURCE_URI,
+                "name": "dcc-cua-performance",
+                "description": "Read-only latency, protocol-size, token-estimate, model-usage and post-snapshot reuse counters for this MCP connection.",
+                "mimeType": "application/json"
             }]})),
             "resources/read" => self.read_connection_resource(&params),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
@@ -376,7 +400,15 @@ impl TaskAuthorizationServer {
     }
 
     fn read_connection_resource(&self, params: &Value) -> Result<Value, String> {
-        if params.get("uri").and_then(Value::as_str) != Some(CONNECTION_RESOURCE) {
+        let uri = params.get("uri").and_then(Value::as_str);
+        if uri == Some(PERFORMANCE_RESOURCE_URI) {
+            return Ok(json!({"contents": [{
+                "uri": PERFORMANCE_RESOURCE_URI,
+                "mimeType": "application/json",
+                "text": serde_json::to_string(&self.performance.report()).map_err(|_| "performance metrics unavailable")?
+            }]}));
+        }
+        if uri != Some(CONNECTION_RESOURCE) {
             return Err("unknown DCC-CUA MCP resource".into());
         }
         let diagnostics = self
@@ -422,32 +454,58 @@ impl TaskAuthorizationServer {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "tools/call requires a tool name".to_owned())?;
+        let include_metrics = params
+            .get("arguments")
+            .and_then(Value::as_object)
+            .and_then(|arguments| arguments.get("include_metrics"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let arguments = params
             .get("arguments")
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
-        if name == "dcc_cua_task_call" {
-            return Ok(match self.task_call(arguments).await {
+        let started = Instant::now();
+        let mut metric_name = name;
+        let mut result = if name == "dcc_cua_task_call" {
+            match self.task_call(arguments).await {
                 Ok(result) => result,
                 Err(message) => tool_error(message),
-            });
-        }
-        let result = match name {
-            "start_task" => {
-                return Ok(match self.start_automatic_task(arguments).await {
-                    Ok(payload) => tool_result(payload),
-                    Err(message) => tool_error(message),
-                });
             }
-            "stop_task" => self.revoke_task(arguments).await,
-            "task_status" => self.task_status(arguments),
-            _ => Err(format!("unknown DCC-CUA MCP tool: {name}")),
+        } else {
+            let result = match name {
+                "start_task" => self.start_automatic_task(arguments).await.map(tool_result),
+                "stop_task" => self.revoke_task(arguments).await.map(tool_result),
+                "task_status" => self.task_status(arguments).map(tool_result),
+                "dcc_cua_metrics" => Ok(tool_result(self.performance.report())),
+                "dcc_cua_record_model_usage" => self.record_model_usage(arguments).map(tool_result),
+                _ => {
+                    metric_name = "unknown";
+                    Err(format!("unknown DCC-CUA MCP tool: {name}"))
+                }
+            };
+            match result {
+                Ok(payload) => payload,
+                Err(message) => tool_error(message),
+            }
         };
-        Ok(match result {
-            Ok(payload) => tool_result(payload),
-            Err(message) => tool_error(message),
-        })
+        let elapsed = started.elapsed();
+        self.performance.record_tool_call(metric_name, elapsed);
+        if include_metrics {
+            self.performance
+                .annotate_call_result(&mut result, metric_name, elapsed);
+        }
+        Ok(result)
+    }
+
+    fn record_model_usage(&mut self, arguments: Value) -> Result<Value, String> {
+        let usage = arguments
+            .get("usage")
+            .ok_or_else(|| "dcc_cua_record_model_usage requires usage".to_owned())?;
+        if !self.performance.record_model_usage(usage) {
+            return Err("usage requires at least one nonnegative integer token count".into());
+        }
+        Ok(self.performance.report())
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
@@ -768,7 +826,6 @@ impl TaskAuthorizationServer {
                         .into(),
                 );
             }
-            proposal.session_open_attempted = true;
             proposal.session = Some(
                 open_task_session(
                     &proposal_id,
@@ -832,6 +889,16 @@ impl TaskAuthorizationServer {
     }
 
     async fn task_call(&mut self, arguments: Value) -> Result<Value, String> {
+        let summary = match arguments.get("compact_text") {
+            None | Some(Value::Bool(false)) => None,
+            Some(Value::Bool(true)) if arguments["method"] == "accessibility_snapshot" => Some(
+                "Captured accessibility snapshot. Read the tree and observation ID in structuredContent.",
+            ),
+            _ => return Err(
+                "compact_text must be boolean and may be enabled only for accessibility_snapshot"
+                    .into(),
+            ),
+        };
         if arguments.get("method").and_then(Value::as_str) == Some("require_user_action") {
             return self.require_user_action(arguments).map(tool_result);
         }
@@ -918,6 +985,7 @@ impl TaskAuthorizationServer {
         } else if method == "live_observation_start" && params.get("request").is_none() {
             params["request"] = json!({});
         }
+        let performance_params = params.clone();
         let response = proposal
             .session
             .as_mut()
@@ -927,12 +995,15 @@ impl TaskAuthorizationServer {
         let response = match response {
             Ok(response) => response,
             Err(error @ HostClientError::Remote { .. }) => {
-                return Ok(interaction_recovery::task_remote_error(
+                let result = interaction_recovery::task_remote_error(
                     &error,
                     &method,
                     &proposal_id,
                     proposal,
-                ));
+                );
+                self.performance
+                    .record_observation_required(&result["structuredContent"]);
+                return Ok(result);
             }
             Err(error) => return Err(error.to_string()),
         };
@@ -946,7 +1017,9 @@ impl TaskAuthorizationServer {
             "target": proposal.session.as_ref().map(LogicalTaskSession::target),
             "native_action_popups": false,
         });
-        super::mcp_output::call_tool_result(host, response.binary_attachment.as_deref())
+        self.performance
+            .record_task_call(&method, &performance_params, &host);
+        super::mcp_output::project_tool_result(host, response.binary_attachment.as_deref(), summary)
     }
 }
 
@@ -971,17 +1044,22 @@ async fn open_task_session(
     let security_services = HostSecurityServices::default()
         .with_task_authorization_host(authorization_host)
         .with_secret_vault(super::secret_vault::native_secret_vault());
-    crate::extension_transport::ensure(
-        extension_transport,
-        &driver,
-        connection_id,
-        &proposal.allowed_methods,
-        &receipt.window_capability,
-        &proposal.registration.target,
+    tokio::time::timeout(
+        Duration::from_millis(TASK_STARTUP_TIMEOUT_MS),
+        crate::extension_transport::ensure(
+            extension_transport,
+            &driver,
+            connection_id,
+            &proposal.allowed_methods,
+            &receipt.window_capability,
+            &proposal.registration.target,
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| startup_timeout("provider transport readiness", TASK_STARTUP_TIMEOUT_MS))??;
     // Retain the owner before hello/open-session can fail or be cancelled.
     // Closing the client transport requests cleanup; never abort admitted native work.
+    proposal.session_open_attempted = true;
     proposal.host_task = Some(OwnedHostTask::spawn(async move {
         process_connection_with_security_services(driver, host_stream, security_services)
             .await
@@ -989,19 +1067,41 @@ async fn open_task_session(
     }));
     let mut client =
         HostClient::from_stream_with_transport(client_stream, SnapshotTransport::BinaryFrame);
-    client
-        .hello(agent_name)
-        .await
-        .map_err(|error| error.to_string())?;
-    client
-        .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
-        .await
-        .map_err(|error| {
-            if let HostClientError::Remote { response, .. } = &error {
-                proposal.cleanup = startup_cleanup_receipt(response);
-            }
-            error.to_string()
-        })
+    tokio::time::timeout(
+        Duration::from_millis(TASK_STARTUP_TIMEOUT_MS),
+        client.hello(agent_name),
+    )
+    .await
+    .map_err(|_| startup_timeout("Host hello", TASK_STARTUP_TIMEOUT_MS))?
+    .map_err(|error| format!("DCC-CUA task startup failed during Host hello: {error}"))?;
+    // Opening an owned browser includes launching Chromium and binding its
+    // native window. Keep hello and existing-window opens on the short budget.
+    let open_timeout_ms = match proposal.registration.target {
+        TrustedTaskAuthorizationTarget::OwnedBrowser(_) => 45_000,
+        TrustedTaskAuthorizationTarget::ExactWindow { .. } => TASK_STARTUP_TIMEOUT_MS,
+    };
+    let session = tokio::time::timeout(
+        Duration::from_millis(open_timeout_ms),
+        client.open_logical_task_session(
+            task_session_id(proposal_id),
+            grant,
+            DEFAULT_IDLE_TIMEOUT_MS,
+        ),
+    )
+    .await
+    .map_err(|_| startup_timeout("Host open_session", open_timeout_ms))?;
+    session.map_err(|error| {
+        if let HostClientError::Remote { response, .. } = &error {
+            proposal.cleanup = startup_cleanup_receipt(response);
+        }
+        format!("DCC-CUA task startup failed during Host open_session: {error}")
+    })
+}
+
+fn startup_timeout(phase: &str, timeout_ms: u64) -> String {
+    format!(
+        "DCC-CUA task startup timed out during {phase} after {timeout_ms} ms; the task lease remains bounded and requires a fresh MCP start"
+    )
 }
 
 fn startup_cleanup_receipt(response: &Value) -> Option<Value> {
@@ -1447,458 +1547,6 @@ fn unix_time_millis() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn native_minimize_scope_schema() -> Value {
-    json!({
-        "title": "Observation-bound native window minimize",
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["action", "input_kind", "secret_input", "authorization_category"],
-        "properties": {
-            "action": {"const": "minimize_window"},
-            "input_kind": {"const": "window_state"},
-            "secret_input": {"const": false},
-            "authorization_category": {"const": "window_state"},
-            "browser_origin": {"type": "null"}
-        }
-    })
-}
-
-fn native_frame_scope_schema() -> Value {
-    json!({
-        "title":"Metadata-bound non-activating native window frame",
-        "type":"object", "additionalProperties":false,
-        "required":["action","input_kind","secret_input","authorization_category"],
-        "properties":{
-            "action":{"const":"set_window_frame"},"input_kind":{"const":"window_state"},
-            "secret_input":{"const":false},"authorization_category":{"const":"window_state"},
-            "browser_origin":{"type":"null"}
-        }
-    })
-}
-
-fn native_menu_dismiss_scope_schema() -> Value {
-    json!({"title":"One-use native standard popup menu cancellation", "type":"object", "additionalProperties":false,
-        "required":["action","input_kind","secret_input","authorization_category"],
-        "properties":{"action":{"const":"dismiss_menu"},"input_kind":{"const":"window_state"},
-            "secret_input":{"const":false},"authorization_category":{"const":"window_state"},"browser_origin":{"type":"null"}}})
-}
-
-fn capture_preparation_scope_schema() -> Value {
-    json!({
-        "title":"Temporary passive exact-root capture preparation",
-        "type":"object","additionalProperties":false,
-        "required":["action","input_kind","secret_input","authorization_category"],
-        "properties":{
-            "action":{"const":"capture_preparation_begin"},"input_kind":{"const":"window_state"},
-            "secret_input":{"const":false},"authorization_category":{"const":"window_state"},
-            "browser_origin":{"type":"null"}
-        }
-    })
-}
-
-fn pixels_action_scope_schema() -> Value {
-    json!({
-        "oneOf": [native_minimize_scope_schema(), native_frame_scope_schema(), native_menu_dismiss_scope_schema(), capture_preparation_scope_schema(), recording_audio::scope_schema(), {
-            "title": "Observation-bound foreground pixel input",
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["action", "input_kind", "secret_input", "authorization_category"],
-            "properties": {
-                "action": {"type": "string", "enum": TrustedTaskActionScope::PIXELS_INPUT_ACTIONS},
-                "input_kind": {"const": "raw_input"},
-                "secret_input": {"const": false},
-                "authorization_category": {"const": "raw_input"},
-                "browser_origin": {"type": "null"}
-            }
-        }]
-    })
-}
-
-fn task_action_scope_schema() -> Value {
-    let required = [
-        "action",
-        "input_kind",
-        "secret_input",
-        "authorization_category",
-    ];
-    json!({
-        "oneOf": [
-            native_minimize_scope_schema(),
-            native_frame_scope_schema(),
-            native_menu_dismiss_scope_schema(),
-            capture_preparation_scope_schema(),
-            recording_audio::scope_schema(),
-            {
-                "title": "Exact-origin paired extension navigation",
-                "type": "object", "additionalProperties": false,
-                "required": ["action", "input_kind", "secret_input", "authorization_category", "browser_origin"],
-                "properties": {
-                    "action": {"const": "browser_extension_navigate"},
-                    "input_kind": {"const": "browser"}, "secret_input": {"const": false},
-                    "authorization_category": {"const": "external_effect"},
-                    "browser_origin": {"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
-                }
-            },
-            {
-                "title": "Semantic exact-window input",
-                "type": "object",
-                "additionalProperties": false,
-                "required": required,
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": TrustedTaskActionScope::NATIVE_ACTIONS,
-                        "description": "Final input action, not a Host method name. For example, browser_click resolves to click."
-                    },
-                    "input_kind": {"const": "semantic"},
-                    "secret_input": {"type": "boolean"},
-                    "authorization_category": {"type": "string", "enum": TrustedTaskActionScope::SEMANTIC_CATEGORIES},
-                    "browser_origin": {"type": "null"}
-                }
-            },
-            {
-                "title": "Raw exact-window input",
-                "type": "object",
-                "additionalProperties": false,
-                "required": required,
-                "properties": {
-                    "action": {"type": "string", "enum": TrustedTaskActionScope::NATIVE_ACTIONS},
-                    "input_kind": {"const": "raw_input"},
-                    "secret_input": {"type": "boolean"},
-                    "authorization_category": {"type": "string", "enum": TrustedTaskActionScope::RAW_INPUT_CATEGORIES},
-                    "browser_origin": {"type": "null"}
-                }
-            },
-            {
-                "title": "Browser credential input",
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["action", "input_kind", "secret_input", "authorization_category", "browser_origin"],
-                "properties": {
-                    "action": {"const": "browser_type"},
-                    "input_kind": {"const": "browser"},
-                    "secret_input": {"const": true},
-                    "authorization_category": {"const": "credential"},
-                    "browser_origin": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 2048,
-                        "pattern": "^https?://[^/?#@]+$"
-                    }
-                }
-            },
-            {
-                "title": "Clipboard credential capture",
-                "type": "object",
-                "additionalProperties": false,
-                "required": required,
-                "properties": {
-                    "action": {"const": "clipboard_capture_secret"},
-                    "input_kind": {"const": "clipboard"},
-                    "secret_input": {"const": true},
-                    "authorization_category": {"const": "credential"},
-                    "browser_origin": {"type": "null"}
-                }
-            }
-        ]
-    })
-}
-
-fn tool_definitions() -> Vec<Value> {
-    let action_scope = task_action_scope_schema();
-    let mut tools = vec![
-        json!({
-            "name": "start_task",
-            "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. Keep this mcp-server stdio connection open through stop_task: task IDs, observations and opaque refs are connection/session-scoped and cannot be resumed after reconnecting. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Capture does not require foreground activation. Every action requires the latest observation and an unchanged native instance. Explicitly granted semantic tasks may use background Windows UIA click, toggle, set_text or set_value on supported fresh same-task UIA elements; other semantic actions do not imply background support. Physical input requires the exact target in the foreground. Pointer locations must be unredacted and natively reachable; physical keyboard and text input require complete visibility. Explicit allow_recording=true grants native video recording_start/state/stop in an operator-owned task directory. Target playback audio additionally requires recording_audio mode/ceilings and its independent playback_audio action; silent video permission never enables sound. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
-            "inputSchema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["application_label", "surface", "allowed_methods", "allowed_actions"],
-                "oneOf": [
-                    {
-                        "required": ["target_process_id", "target_window_handle"],
-                        "not": {"required": ["owned_browser_launch"]}
-                    },
-                    {
-                        "required": ["owned_browser_launch"],
-                        "not": {"anyOf": [
-                            {"required": ["target_process_id"]},
-                            {"required": ["target_window_handle"]}
-                        ]}
-                    }
-                ],
-                "allOf": [{
-                    "if": {
-                        "required": ["observation_mode"],
-                        "properties": {"observation_mode": {"const": "pixels_only"}}
-                    },
-                    "then": {
-                        "required": ["target_process_id", "target_window_handle"],
-                        "not": {"required": ["owned_browser_launch"]},
-                        "properties": {
-                            "surface": {"const": "window"},
-                            "allowed_browser_origins": {"maxItems": 0},
-                            "allowed_methods": {"items": {"enum": [
-                                "get_window_state", "change_window_state", "minimize_window", "set_window_frame", "snapshot",
-                                "execute_action", "get_session_state", "get_input_state", "session_health", "poll_session_events",
-                                "live_observation_start", "live_observation_state", "live_observation_stop",
-                                "recording_start", "recording_state", "recording_stop"
-                                ,"capture_preparation_begin", "capture_preparation_state", "capture_preparation_stop", "capture_preparation_snapshot"
-                            ]}},
-                            "allowed_actions": {"items": pixels_action_scope_schema()}
-                        }
-                    }
-                }, {
-                    "if":{"anyOf":[
-                        {"required":["allow_capture_preparation"],"properties":{"allow_capture_preparation":{"const":true}}},
-                        {"properties":{"allowed_methods":{"contains":{"enum":["capture_preparation_begin","capture_preparation_state","capture_preparation_stop","capture_preparation_snapshot"]}}}},
-                        {"properties":{"allowed_actions":{"contains":capture_preparation_scope_schema()}}}
-                    ]},
-                    "then":{"required":["allow_capture_preparation","observation_mode"],"properties":{
-                        "allow_capture_preparation":{"const":true},"observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
-                        "allowed_methods":{"allOf":[
-                            {"contains":{"const":"get_window_state"}}, {"contains":{"const":"capture_preparation_begin"}},
-                            {"contains":{"const":"capture_preparation_state"}}, {"contains":{"const":"capture_preparation_stop"}}
-                        ]}, "allowed_actions":{"contains":capture_preparation_scope_schema()}
-                    }}
-                }, {
-                    "if": {"required":["allow_recording"],"properties":{"allow_recording":{"const":true}}},
-                    "then": {"required":["observation_mode"],"properties":{
-                        "observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
-                        "allowed_methods":{"allOf":[
-                            {"contains":{"const":"recording_start"}},
-                            {"contains":{"const":"recording_state"}},
-                            {"contains":{"const":"recording_stop"}}
-                        ]}
-                    }}
-                }, {
-                    "if":{"properties":{"allowed_methods":{"contains":{"enum":["recording_start","recording_state","recording_stop"]}}}},
-                    "then":{"required":["allow_recording"],"properties":{"allow_recording":{"const":true}}}
-                }, {
-                    "if":{"properties":{"allowed_methods":{"contains":{"const":"live_observation_start"}}}},
-                    "then":{"properties":{"allowed_methods":{"allOf":[
-                        {"contains":{"const":"live_observation_state"}},
-                        {"contains":{"const":"live_observation_stop"}}
-                    ]}}}
-                }, {
-                    "if":{"properties":{"allowed_methods":{"contains":{"const":"set_window_frame"}}}},
-                    "then":{"required":["observation_mode"],"properties":{
-                        "observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
-                        "allowed_methods":{"contains":{"const":"get_window_state"}},
-                        "allowed_actions":{"contains":native_frame_scope_schema()}
-                    }}
-                }, {
-                    "if":{"properties":{"allowed_actions":{"contains":native_menu_dismiss_scope_schema()}}},
-                    "then":{"required":["observation_mode"],"properties":{
-                        "observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
-                        "allowed_methods":{"allOf":[{"contains":{"const":"get_window_state"}},{"contains":{"const":"change_window_state"}}]}
-                    }}
-                }],
-                "properties": {
-                    "application_label": {"type": "string", "minLength": 1, "maxLength": 80},
-                    "target_process_id": {"type": "integer", "minimum": 1},
-                    "target_window_handle": {"type": "integer", "minimum": 1},
-                    "owned_browser_launch": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": ["browser", "profile"],
-                        "properties": {
-                            "browser": {"type": "string", "enum": ["chromium"]},
-                            "profile": {"type": "string", "enum": ["isolated_new"]}
-                        }
-                    },
-                    "surface": {"type": "string", "enum": ["window", "browser"]},
-                    "observation_mode": {"type": "string", "enum": ["semantic", "pixels_only"], "default": "semantic"},
-                    "allow_recording": {"type":"boolean","default":false,
-                        "description":"Explicit native pixels video-only permission. Requires recording_start/state/stop and an operator-configured DCC_CUA_RECORDING_OUTPUT_ROOT. The server allocates an immutable task directory; callers cannot configure its root."},
-                    "allow_capture_preparation":{"type":"boolean","default":false,
-                        "description":"Explicit bounded passive exact-root preparation. Requires pixels_only, get_window_state, begin/state/stop, its closed action, and operator-owned DCC_CUA_CAPTURE_PREPARATION_JOURNAL_ROOT. Does not grant input or caller-selected journal/target; prepared snapshots mint no observation/input token."},
-                    "allowed_methods": {
-                        "type": "array",
-                        "description": "Closed Host methods. Extension calls require an exact task-authorized expected_origin. Click requires semantic/external_effect scope; non-secret type requires semantic/content_change scope. Both require a fresh task-owned snapshot and foreground ready target.",
-                        "minItems": 1,
-                        "maxItems": MAX_ALLOWED_METHODS,
-                        "uniqueItems": true,
-                        "items": {"type": "string", "enum": [
-                            "get_window_state", "change_window_state", "minimize_window", "set_window_frame", "snapshot", "accessibility_snapshot", "verify_state",
-                            "capture_preparation_begin", "capture_preparation_state", "capture_preparation_stop", "capture_preparation_snapshot",
-                            "find", "wait_for", "execute_action", "get_session_state",
-                            "get_input_state", "session_health", "poll_session_events",
-                            "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
-                            "browser_navigate", "browser_click", "browser_type", "browser_pointer",
-                            "browser_set_input_files", "browser_download", "browser_dialog",
-                            "browser_extension_status", "browser_extension_call",
-                            "live_observation_start", "live_observation_state", "live_observation_stop",
-                            "recording_start", "recording_state", "recording_stop"
-                        ]}
-                    },
-                    "allowed_actions": {
-                        "type": "array",
-                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window, set_window_frame or the independent dismiss_menu scope with input_kind=window_state, secret_input=false, authorization_category=window_state; these grant no raw input. Pixel input accepts click, double_click, right_click, toggle, drag, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
-                        "minItems": 0,
-                        "maxItems": 32,
-                        "uniqueItems": true,
-                        "items": action_scope
-                    },
-                    "allowed_browser_origins": {
-                        "type": "array",
-                        "maxItems": 32,
-                        "uniqueItems": true,
-                        "items": {"type": "string", "format": "uri"}
-                    },
-                    "ttl_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_TTL_MINUTES, "default": DEFAULT_TTL_MINUTES}
-                }
-            },
-            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
-        }),
-        json!({
-            "name": "task_status",
-            "title": "DCC-CUA task status",
-            "description": "Read the current state of an exact DCC-CUA task on the same MCP connection that started it. Task IDs are not portable across connections.",
-            "inputSchema": task_id_schema(),
-            "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
-        }),
-        json!({
-            "name": "stop_task",
-            "title": "Stop DCC-CUA task",
-            "description": "Revoke one exact task's runtime lease, then await Host session cleanup, including video and sidecar finalization, and bounded connection completion. Cleanup errors or unknown acknowledgements remain visible; a dropped connection is not a successful stop. Pending Host completion may be checked again with stop_task; it never restarts or replays the task.",
-            "inputSchema": task_id_schema(),
-            "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
-        }),
-        json!({
-            "name": "dcc_cua_task_call",
-            "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. execute_action params require observation_id and action {action, input_kind, intent}; semantic input also requires accessibility_state_id and a fresh element reference. Raw x/y are pixels in snapshot.coordinate_space, never UIA virtual-desktop bounds or a resized preview; source_rect already contains native window units, so do not apply DPI again. Keyboard input uses keys, not key. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. In explicitly granted semantic tasks, supported Windows UIA click, toggle, set_text or set_value may use delivery_mode=background with the latest observation_id, accessibility_state_id and same-task UIA element reference. Take a fresh semantic snapshot and verify the actual post-action state; type, double_click, coordinates and keyboard input do not inherit this UIA background support. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Pixels-only delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize pixels-only background input or a task-mode switch to bypass refusal. Do not blindly retry refused activation. In pixels_only tasks, use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused in that mode. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
-            "inputSchema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["task_id", "method", "params"],
-                "properties": {
-                    "task_id": {"type": "string"},
-                    "method": {"type": "string"},
-                    "params": {"type": "object"}
-                },
-                "allOf": [{
-                    "if":{"properties":{"method":{"const":"execute_action"}}},
-                    "then":{"properties":{"params": action_params_schema()}}
-                }, {
-                    "if":{"properties":{"method":{"const":"change_window_state"}}},
-                    "then":{"properties":{"params":{"oneOf":[
-                        {"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"enum":["activate","restore_activate"]}}},
-                        {"type":"object","additionalProperties":false,"required":["operation","window_state_id"],"properties":{
-                            "operation":{"const":"dismiss_menu"},"window_state_id":{"type":"string","pattern":"^native-menu-state-","maxLength":128,
-                                "description":"One-use menu_dismiss_window_state_id from get_window_state, at most five seconds old. Frame and snapshot tokens are refused."}
-                        }}
-                    ]}}}
-                }, {
-                    "if":{"properties":{"method":{"const":"capture_preparation_begin"}}},
-                    "then":{"properties":{"params":{
-                        "type":"object","additionalProperties":false,"required":["request"],
-                        "properties":{"request":{"type":"object","additionalProperties":false,
-                            "required":["window_state_id","lifetime_ms"],"properties":{
-                                "window_state_id":{"type":"string","minLength":1,"maxLength":128},
-                                "lifetime_ms":{"type":"integer","minimum":1,"maximum":dcc_cua_protocol::capture_preparation::MAX_PREPARATION_LIFETIME_MS}
-                            }}}
-                    }}}
-                }, {
-                    "if":{"properties":{"method":{"enum":["capture_preparation_state","capture_preparation_stop","capture_preparation_snapshot"]}}},
-                    "then":{"properties":{"params":{"type":"object","maxProperties":0}}}
-                }, {
-                    "if":{"properties":{"method":{"const":"set_window_frame"}}},
-                    "then":{"properties":{"params":{
-                        "type":"object","additionalProperties":false,"required":["window_state_id","frame"],
-                        "properties":{
-                            "window_state_id":{"type":"string","minLength":1,"maxLength":128,
-                                "description":"One-use token from explicit pixels_only get_window_state, at most five seconds old. Snapshot observation IDs do not authorize this method."},
-                            "frame":{"type":"object","additionalProperties":false,"required":["x","y","width","height"],
-                                "properties":{
-                                    "x":{"type":"integer","minimum":-2147483648,"maximum":2147483647},
-                                    "y":{"type":"integer","minimum":-2147483648,"maximum":2147483647},
-                                    "width":{"type":"integer","minimum":1,"maximum":2147483647},
-                                    "height":{"type":"integer","minimum":1,"maximum":2147483647}
-                                }
-                            }
-                        }
-                    }}}
-                }, {
-                    "if": {"properties": {"method": {"const": "snapshot"}}},
-                    "then": {"properties": {"params": {
-                        "properties": {"capture_diagnostics": {
-                            "type": "boolean", "default": false,
-                            "description": "Opt-in content-free byte diagnostics on an explicit pixels_only snapshot only. No extra capture or input permission."
-                        }}
-                    }}}
-                }, {
-                    "if":{"properties":{"method":{"const":"recording_start"}}},
-                    "then":{"properties":{"params":{"type":"object","additionalProperties":false,
-                        "properties":{"request":{"type":"object","additionalProperties":false,
-                            "properties":{"recording_audio":{"enum":["none","target_process_tree"]},"record_video":{"const":true},"output_dir":{"type":"string",
-                                "description":"Optional exact task-authorized directory. The server supplies its immutable path and rejects a different value."}}}}
-                    }}}
-                }, {
-                    "if":{"properties":{"method":{"const":"live_observation_start"}}},
-                    "then":{"properties":{"params":{"type":"object","additionalProperties":false,
-                        "properties":{"request":{"type":"object","additionalProperties":false,
-                            "properties":{"fps":{"type":"integer","minimum":1,"maximum":30},
-                                "max_dimension":{"type":"integer","minimum":256,"maximum":4096}}}}
-                    }}}
-                }, {
-                    "if":{"properties":{"method":{"enum":["recording_state","recording_stop","live_observation_state","live_observation_stop"]}}},
-                    "then":{"properties":{"params":{"type":"object","maxProperties":0}}}
-                }]
-            },
-            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true}
-        }),
-    ];
-    recording_audio::configure_schema(&mut tools[0]);
-    tools[0]["inputSchema"]["properties"]["allow_native_capture_popup_keyboard"] =
-        capture_popup::owner_schema();
-    workflows::extend_tool_schema(&mut tools);
-    tools
-}
-
-fn task_id_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["task_id"],
-        "properties": {"task_id": {"type": "string"}}
-    })
-}
-
-fn action_params_schema() -> Value {
-    json!({
-        "type":"object", "required":["observation_id","action"],
-        "properties":{
-            "observation_id":{"type":"string","minLength":1,"description":"Copy the latest same-task observation_id; never reuse it after an action attempt."},
-            "accessibility_state_id":{"type":"string","description":"Required for semantic input: copy the latest same-task accessibility_state_id."},
-            "capture_after":{"type":"boolean","default":false},
-            "post_snapshot_delay_ms":{"type":"integer","minimum":0},
-            "post_snapshot_mode":{"type":"string","enum":["full","semantic"]},
-            "action":{
-                "type":"object", "required":["action","input_kind","intent"],
-                "properties":{
-                    "action":{"type":"string","enum":TrustedTaskActionScope::NATIVE_ACTIONS},
-                    "input_kind":{"type":"string","enum":["semantic","raw_input"]},
-                    "intent":{"type":"string","description":"Required audit context. For bounded raw navigation use navigate or ordinary_edit. Semantic authorization uses the observed policy_tier, not this label."},
-                    "delivery_mode":{"type":"string","enum":["foreground","background"]},
-                    "element_index":{"type":"integer","minimum":0},
-                    "element_token":{"type":"string","minLength":1,"description":"Opaque reference from the latest same-task UIA observation; do not convert its virtual-desktop bounds to guessed coordinates."},
-                    "x":{"type":"number","minimum":0,"description":"X in snapshot.coordinate_space image pixels, not UIA/desktop bounds or a resized preview. source_rect already contains native window units; do not multiply DPI again."},
-                    "y":{"type":"number","minimum":0,"description":"Y in the latest delivered image, with the same coordinate contract as x."},
-                    "keys":{"type":"array","items":{"type":"string"},"description":"Keyboard input uses keys, not key; it requires a raw-input action scope."},
-                    "text":{"type":"string","description":"Non-secret text only. Credentials must use a trusted secret_handle."}
-                }
-            }
-        },
-        "allOf":[{
-            "if":{"properties":{"action":{"properties":{"input_kind":{"const":"semantic"}}}}},
-            "then":{"required":["accessibility_state_id"]}
-        }]
-    })
-}
-
 fn tool_result(payload: Value) -> Value {
     let is_error = payload.get("ok").and_then(Value::as_bool) == Some(false);
     json!({
@@ -1962,6 +1610,9 @@ struct TaskRemoteErrorDetails {
     #[serde(flatten)]
     diagnostic: TaskRemoteErrorDiagnostics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_input_fence:
+        Option<dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     timed_out: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     phase: Option<dcc_cua_core::ComputerUseErrorPhase>,
@@ -2022,6 +1673,11 @@ fn project_task_remote_error(
     };
     let mut details = TaskRemoteErrorDetails {
         diagnostic: diagnostic.clone(),
+        native_input_fence: remote_error_field(remote_details, "native_input_fence")
+            .filter(|fence: &dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic| {
+                fence.schema_version == 1 && fence.redacted_rectangles.len()
+                    <= dcc_cua_protocol::native_input_diagnostic::MAX_NATIVE_INPUT_DIAGNOSTIC_REGIONS
+            }),
         timed_out: remote_error_field(remote_details, "timed_out"),
         phase: remote_error_field(remote_details, "phase"),
         action_attempted: remote_error_field(remote_details, "action_attempted"),

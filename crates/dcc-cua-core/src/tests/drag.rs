@@ -370,6 +370,25 @@ fn combined_down_drag_stops_before_the_waypoint_whose_live_fence_fails() {
 }
 
 #[rstest]
+fn combined_down_drag_preserves_multi_point_waypoints() {
+    let moves = RefCell::new(Vec::new());
+
+    let outcome = run_windows_fenced_absolute_waypoints_with_trace(
+        &[(3, 2), (6, 4), (9, 6)],
+        30,
+        || Ok::<_, &'static str>(()),
+        |x, y| {
+            moves.borrow_mut().push((x, y));
+            Ok(())
+        },
+        |_| {},
+    );
+
+    assert!(outcome.into_result().is_ok());
+    assert_eq!(moves.into_inner(), vec![(3, 2), (6, 4), (9, 6)]);
+}
+
+#[rstest]
 fn combined_down_drag_pre_batch_fence_failure_injects_nothing() {
     let outcome = run_combined_down_drag_sequence!(
         || Err::<bool, _>("exact target is no longer foreground"),

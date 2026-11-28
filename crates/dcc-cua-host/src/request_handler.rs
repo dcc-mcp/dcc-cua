@@ -11,39 +11,11 @@ mod session_helpers;
 mod verification;
 use crate::timing::{HostTimingPhase as Phase, measure_phase as timed};
 pub(super) use capture_preparation::passive_preparation_snapshot_response;
+pub(super) use capture_preparation::validate_snapshot_capture_diagnostics;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(super) use request_timing::handle_request_with_security_services;
 pub(crate) use session_helpers::*;
-pub(super) fn validate_snapshot_capture_diagnostics(
-    mode: TaskObservationMode,
-    capture_diagnostics: bool,
-) -> Result<(), HostError> {
-    if capture_diagnostics && mode != TaskObservationMode::PixelsOnly {
-        return Err(HostError::Protocol(
-            "capture_diagnostics is available only for an explicit pixels_only snapshot".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
-    let HostError::ComputerUse(mut error) = error else {
-        return error;
-    };
-    let details = error.details.get_or_insert_default();
-    if details.action_attempted.is_none() {
-        details.phase = Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch);
-        details.action_attempted = Some(false);
-        details.input_sent = Some(dcc_cua_core::ComputerUseInputState::NotSent);
-        details.completion = Some(dcc_cua_core::ComputerUseCompletionState::Known);
-        details.effect_unknown = Some(false);
-        details.automatic_input = Some(false);
-        details.blind_retry = Some(false);
-        details.fresh_observation_required = Some(true);
-    }
-    HostError::ComputerUse(error)
-}
 
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
@@ -793,6 +765,14 @@ async fn handle_request_inner(
                 ),
             )
             .await?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            enable_granted_pixel_input(
+                &grant,
+                preauthorized.as_ref(),
+                security_services,
+                &mut session,
+            )
+            .await?;
             let Some(target) = session.target() else {
                 let _ = session.stop().await;
                 return Err(HostError::Protocol("CUA did not return a target".into()));
@@ -940,7 +920,9 @@ async fn handle_request_inner(
                     .await?;
             let state = if host.require_native_menu_dismiss_grant(&session_id).is_ok() {
                 host.session.native_window_state_for_menu_dismiss().await
-            } else if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+            } else if !cfg!(target_os = "linux")
+                && host.observation_mode == crate::TaskObservationMode::PixelsOnly
+            {
                 host.session.native_window_state_for_frame().await
             } else {
                 host.session.window_state().await
@@ -1832,7 +1814,32 @@ async fn handle_request_inner(
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
             revalidate_queued_action(host, &mut action).await?;
-            let result = timed(Phase::NativeAction, host.session.perform_action(&action)).await;
+            let deadline = if action.action == "key_sequence"
+                || (cfg!(any(target_os = "linux", target_os = "macos"))
+                    && host.observation_mode == TaskObservationMode::PixelsOnly
+                    && matches!(action.action.as_str(), "move" | "click" | "drag"))
+            {
+                let lease = host
+                    .bound_task_authorization(&session_id, "execute_action")
+                    .ok_or_else(|| {
+                        denied(
+                            HostProtocolErrorCode::TaskAuthorizationDenied,
+                            "key sequence lease",
+                        )
+                    })?;
+                let monotonic_base = Instant::now();
+                let remaining = lease
+                    .expires_at_unix_ms
+                    .saturating_sub(crate::task_authorization::unix_time_millis());
+                Some(monotonic_base + Duration::from_millis(remaining))
+            } else {
+                None
+            };
+            let result = timed(
+                Phase::NativeAction,
+                host.session.perform_action_with_deadline(&action, deadline),
+            )
+            .await;
             action.text.zeroize();
             let result = host.finish_observation_sensitive_attempt(result);
             let result = if host.observation_mode == TaskObservationMode::PixelsOnly {

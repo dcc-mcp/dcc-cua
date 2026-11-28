@@ -93,6 +93,7 @@ fn post_snapshot_publishes_image_coordinates_separate_from_native_bounds(#[case]
             "dimensions_source":"encoded_png_ihdr", "source_rect":bounds,
         })
     );
+    assert_eq!(response["observation_required"], false);
 }
 
 fn owned_payload_result(status: ComputerUseToolStatus) -> ComputerUseToolResult {

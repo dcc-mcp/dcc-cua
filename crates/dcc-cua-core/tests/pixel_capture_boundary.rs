@@ -109,6 +109,13 @@ fn exact_source_first_capture_instance_boundary() {
         "pub(crate) async fn gated_exact_window_observation",
     ));
     let mut native_types = String::new();
+    let print_window = include_str!("../../dcc-cua-platform-windows/src/print_window.rs");
+    native_types.push_str(item(print_window, "pub struct PrintWindowCapture {"));
+    let provenance = include_str!("../../dcc-cua-showcase/src/provenance.rs");
+    let frame_source = item(provenance, "pub enum NativeFrameSource");
+    selected.push_str(&format!(
+        "mod dcc_cua_showcase {{ #[derive(Clone,Copy,Debug,PartialEq,Eq)] {frame_source} }}"
+    ));
     for marker in [
         "pub struct ExactWindowPixelInstanceEvidence",
         "pub struct ExactWindowPixelEvidence",
@@ -217,10 +224,9 @@ fn exact_source_semantic_snapshot_routing() {
         "#![allow(dead_code, unused_variables)]\nmod actual {{ {model}\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n{route}\nimpl ComputerUseSession {{ {prefix} self.semantic_snapshot(&target, max_elements, max_depth) }} }} }}"
     )
     // This model exercises Windows UIA routing on every test host. Keep
-    // Linux's independent X11 route excluded just as it is on Windows;
-    // its real implementation is covered by the Linux session tests.
+    // the independent Unix route excluded just as it is on Windows.
     .replace("#[cfg(windows)]", "")
-    .replace("#[cfg(target_os = \"linux\")]", "#[cfg(any())]");
+    .replace("#[cfg(any(target_os = \"linux\", target_os = \"macos\"))]", "#[cfg(any())]");
     run_boundary(&source);
 }
 

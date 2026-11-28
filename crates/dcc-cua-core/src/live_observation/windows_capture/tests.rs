@@ -281,7 +281,7 @@ fn verified_frame_admission_requires_every_native_fence_component() {
 }
 
 #[rstest]
-fn native_instance_reuse_and_wgc_route_change_are_terminal() {
+fn native_instance_reuse_is_terminal_but_exact_wgc_can_cross_route_classifier() {
     let pinned = evidence().instance;
     for mutation in 0..4 {
         let mut replacement = pinned;
@@ -297,13 +297,22 @@ fn native_instance_reuse_and_wgc_route_change_are_terminal() {
             ComputerUseErrorCode::InvalidTarget
         );
     }
-    assert!(require_wgc_route(ExactWindowCaptureRoute::Wgc).is_ok());
-    assert_eq!(
-        require_wgc_route(ExactWindowCaptureRoute::VerifiedVisible)
-            .unwrap_err()
-            .code,
-        ComputerUseErrorCode::InvalidTarget
-    );
+    assert!(native_source_matches_target(
+        NativeFrameSource::Wgc,
+        ExactWindowCaptureRoute::Wgc
+    ));
+    assert!(native_source_matches_target(
+        NativeFrameSource::Wgc,
+        ExactWindowCaptureRoute::VerifiedVisible
+    ));
+    assert!(native_source_matches_target(
+        NativeFrameSource::VerifiedVisible,
+        ExactWindowCaptureRoute::VerifiedVisible
+    ));
+    assert!(!native_source_matches_target(
+        NativeFrameSource::VerifiedVisible,
+        ExactWindowCaptureRoute::Wgc
+    ));
 }
 
 fn measured_wgc_frame() -> WgcFrameGeometry {

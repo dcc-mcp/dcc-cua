@@ -108,6 +108,19 @@ fn manifest_advertises_the_provider_free_exact_window_contract() {
     assert_eq!(manifest["runtime"]["backend"], "cua-driver-sdk");
     assert_eq!(manifest["runtime"]["separate_driver_required"], false);
     assert_eq!(
+        manifest["runtime"]["exact_window_pixels"]["key_sequence"]["capability"],
+        "guarded_key_sequence_v1"
+    );
+    assert!(
+        manifest::linux_exact_window_pixels()
+            .get("key_sequence")
+            .is_some()
+    );
+    assert_eq!(
+        dcc_cua_host::host_capabilities(false).contains(&"guarded_key_sequence_v1"),
+        cfg!(any(windows, target_os = "linux", target_os = "macos"))
+    );
+    assert_eq!(
         manifest["runtime"]["exact_window_pixels"]["cli_flag"],
         "--pixels-only"
     );
@@ -185,11 +198,10 @@ fn packaged_skill_describes_the_verified_visible_desktop_crop_truthfully() {
 }
 
 #[rstest]
-fn linux_pixels_manifest_advertises_only_the_read_only_x11_slice() {
+fn linux_pixels_manifest_requires_an_explicit_input_grant() {
     let capability = manifest::linux_exact_window_pixels();
     assert_eq!(capability["availability"], "linux_local_x11_non_composited");
     for name in [
-        "input_available",
         "activation_available",
         "recording_available",
         "accessibility_provider_started",
@@ -198,7 +210,8 @@ fn linux_pixels_manifest_advertises_only_the_read_only_x11_slice() {
     ] {
         assert_eq!(capability[name], false, "{name}");
     }
-    assert_eq!(capability["read_only"], true);
+    assert_eq!(capability["read_only_by_default"], true);
+    assert_eq!(capability["input_available"], true);
     #[cfg(target_os = "linux")]
     assert_eq!(
         manifest::document()["runtime"]["exact_window_pixels"],

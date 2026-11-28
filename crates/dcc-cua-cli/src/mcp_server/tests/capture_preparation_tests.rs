@@ -169,7 +169,7 @@ fn capture_preparation_schema_and_method_allowlists_retain_exact_lifecycle_bound
     assert_eq!(schema["additionalProperties"], false);
     assert!(schema["properties"].get("journal_directory").is_none());
     assert_eq!(
-        capture_preparation_scope_schema()["properties"]["secret_input"]["const"],
+        schema::capture_preparation_scope_schema()["properties"]["secret_input"]["const"],
         false
     );
     assert!(schema.to_string().contains("capture_preparation_snapshot"));

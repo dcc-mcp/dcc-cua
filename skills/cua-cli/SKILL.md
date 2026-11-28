@@ -67,6 +67,16 @@ For a visual-only task, select `observation_mode: "pixels_only"` at startup
 to avoid unnecessary accessibility traversal. Keep capture diagnostics off
 except while measuring; their hashes and histograms add work.
 
+Prefer a short script for complex work once the next actions and their targets
+are known. Keep the existing task connection. Use a single guarded key
+sequence for adjacent chords and a bounded [action sequence](scripts/action_sequence.py)
+for mixed moves, clicks, drags or key batches. Save the declared steps and
+their execution journal together. Record coordinates relative to the observed
+window, including path points and duration for a drag. Browser pointer steps
+use unique control labels and resolve fresh references on the same tab.
+Stop at a decision boundary. A delivered step becomes verified only after
+application readback. An unconfirmed step can have partial effects.
+
 For `dcc_cua_task_call` / `execute_action`, pass `observation_id` and an
 `action` containing `action`, `input_kind` and `intent`. Semantic input also
 needs the current `accessibility_state_id` and element reference. Request the
@@ -74,6 +84,43 @@ scope's observed authorization category (`task_grant` for ordinary controls);
 `ordinary_navigation` is not a task authorization category. `intent` is audit
 context, not permission to weaken an observed account or security category.
 Keyboard actions use `keys: ["ENTER"]`, not a singular `key` field.
+
+For a deterministic Blender workflow, inspect the installed runtime and its
+platform capabilities first. Look for `guarded_key_sequence_v1` in the Host
+capabilities. Supported Windows, macOS and local X11 exact-window foreground tasks support
+the separately granted `raw_input/key_sequence` action. Submit 1–64 ordered
+taps or chords in `keys` with one fresh observation on the same connection.
+The [modeling](../../examples/blender-extrude-column.json) and
+[rig animation](../../examples/blender-rig-keyframes.json) actions use
+Blender 5.1.1 factory settings and its default English keymap. The model uses
+zero inter-step delay. The animation allows 12 ms between chords. Submit its
+first batch through the eight Right taps. Verify Pose mode at frame 9 with
+the first pose keyed, then reuse the post-action observation for the final
+three chords starting at Alt+R. Blender evaluates animation asynchronously.
+The modeling example selects the second result for “Add Mesh Plane”. Check the
+menu before using that sequence with another version, locale or search history.
+End the batch when the
+next choice depends on the UI. A stopped sequence may have delivered a prefix.
+
+Keep the Agent frame visible. Check the target's foreground state and the
+native delivery receipt's `post_dispatch_validated` field. The execution frame
+lease ends after dispatch. If another surface covers the editor, inspect
+the refusal and previously completed work before issuing any input. Reuse
+`post_snapshot.observation_id` when continuing visually. For a terminal edit
+with a typed scene readback, verify the mesh, bone hierarchy or animation
+curves with `capture_after=false`.
+
+Compare client wall time through verified completion with
+`result.delivery.key_sequence_timing.dispatch_ms` and `inter_step_wait_ms`.
+Record image bytes separately from Host-reported model usage. The X11 route
+requires a local non-composited display, exact focus and space for an exposed
+exterior band. Use its advertised pixels-only move, click and drag actions
+for Blender pointer scripts. Keep a primary-button drag on the bound client
+window and verify intermediate motion and release through application events.
+On macOS capture needs Screen Recording permission. Input also
+requires Accessibility, exact AX window focus, an exposed native frame and a
+working Escape monitor. Check the returned capability and native refusal reason
+on the user's desktop.
 
 Raw `x`/`y` refer to the encoded image dimensions in `coordinate_space`, never
 UIA virtual-desktop bounds or the size of an on-screen preview. Convert a

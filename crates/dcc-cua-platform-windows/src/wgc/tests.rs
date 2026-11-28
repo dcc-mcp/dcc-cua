@@ -8,7 +8,7 @@ use super::WgcCompositorTimingUnavailable::{
 #[case(Some(20_000), 1, 2, None)]
 #[case(Some(20_000), 3, 3, Some(CalibrationBracketTooWide))]
 #[case(None, 0, 1, Some(PerformanceCounterUnavailable))]
-#[case(Some(9_999), 0, 1, Some(TimestampAfterPublish))]
+#[case(Some(9_999), 0, 3, Some(TimestampAfterPublish))]
 fn calibration_retries_only_wide_brackets_and_uses_the_accepted_sample(
     #[case] qpc: Option<i64>,
     #[case] wide_samples: usize,

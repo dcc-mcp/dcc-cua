@@ -667,7 +667,7 @@ impl LiveObservationStatus {
             "last_compositor_timing": last_compositor_timing,
             "max_compositor_to_publish_ms": self.max_compositor_to_publish_ms,
             "last_capture_pipeline": self.latest.as_ref().and_then(|frame| frame.wgc_timing()).map(|timing| timing.pipeline),
-            "capture_pipeline_semantics": "disjoint_wall_microseconds_recording_precheck_exclusion_acquire_source_capture_source_validation_recording_admission_publication_validation; precheck_precedes_capture_cycle; source_capture_includes_wait_and_readback; excludes_clock_mapping_owner_handoffs_scheduling_between_cycles_and_status_serialization",
+            "capture_pipeline_semantics": "disjoint_wall_microseconds_recording_precheck_exclusion_acquire_source_capture_source_validation_recording_admission_publication_validation; recording_precheck_is_zero_and_post_capture_admission_is_authoritative; source_capture_includes_wait_and_readback; excludes_clock_mapping_owner_handoffs_scheduling_between_cycles_and_status_serialization",
             "capture_mode": self.capture_mode.unwrap_or("initializing"),
             "latest_sequence": self.latest.as_ref().map(|frame| frame.sequence()),
             "latest_frame_age_ms": self.latest.as_ref().map(|frame| frame.age_ms()),

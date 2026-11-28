@@ -99,6 +99,16 @@ pub(crate) const FRAME_ALPHA_MAX: u8 = {};\n",
 }
 
 fn main() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let source = "src/macos_frame.m";
+        println!("cargo:rerun-if-changed={source}");
+        cc::Build::new()
+            .file(source)
+            .flag("-fobjc-arc")
+            .compile("dcc_cua_frame");
+        println!("cargo:rustc-link-lib=framework=AppKit");
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
+    }
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let theme_path = manifest.join("theme/dcc-cua-theme.json");
     println!("cargo:rerun-if-changed={}", theme_path.display());

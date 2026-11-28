@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PixelObservationRoute {
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     ExplicitPixelsOnly,
     AccessibilityUnavailableDegraded,
     AccessibilityTimeoutDegraded,
@@ -11,7 +11,7 @@ pub(super) enum PixelObservationRoute {
 impl PixelObservationRoute {
     pub(super) const fn observation_mode(self) -> &'static str {
         match self {
-            #[cfg(any(windows, target_os = "linux", test))]
+            #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
             Self::ExplicitPixelsOnly => "pixels_only",
             Self::AccessibilityUnavailableDegraded => "accessibility_unavailable_degraded",
             Self::AccessibilityTimeoutDegraded => "accessibility_timeout_degraded",
@@ -219,20 +219,26 @@ fn validate_exact_window_pixel_source(
     };
     match fence.mode {
         ExactWindowPixelCaptureMode::WindowContent => {
-            let proof = fence.wgc_geometry.ok_or_else(invalid)?;
-            let native = dcc_cua_platform_windows::NativeWindowGeometry {
-                win32_bounds: fence.geometry.bounds,
-                dwm_bounds: Some(fence.native_visible_bounds),
-                dpi: fence.geometry.dpi,
-            };
-            let actual = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
-                native,
-                native,
-                proof.frame,
-                proof.bgra_byte_len,
-            )
-            .map_err(|_| invalid())?;
-            if actual != proof || proof.source_rect != fence.source_rect {
+            if let Some(proof) = fence.wgc_geometry {
+                let native = dcc_cua_platform_windows::NativeWindowGeometry {
+                    win32_bounds: fence.geometry.bounds,
+                    dwm_bounds: Some(fence.native_visible_bounds),
+                    dpi: fence.geometry.dpi,
+                };
+                let actual = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+                    native,
+                    native,
+                    proof.frame,
+                    proof.bgra_byte_len,
+                )
+                .map_err(|_| invalid())?;
+                if actual != proof || proof.source_rect != fence.source_rect {
+                    return Err(invalid());
+                }
+            } else if fence.source_rect != fence.geometry.bounds {
+                // A platform-owned HWND renderer such as PrintWindow has no
+                // WGC texture proof. Its physical source must still cover the
+                // exact Win32 window rectangle byte-for-byte.
                 return Err(invalid());
             }
         }
