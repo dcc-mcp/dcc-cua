@@ -101,12 +101,19 @@ int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int rende
                     dock = [app.bundleIdentifier isEqualToString:@"com.apple.dock"] &&
                         [app.executableURL.path isEqualToString:@"/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock"];
                     hit = hitWindow(CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target)));
-                    // Tahoe's untitled Dock tracking surface spans the
-                    // display even when WindowServer routes input through it.
-                    // Real Dock panels and every non-system owner remain blockers.
+                    // Dock tracking windows can be unnamed or named "Dock".
+                    // Exclude the actual Dock strip using the usable screen
+                    // frame in addition to the system owner's point hit proof.
+                    NSString *name = entry[(__bridge id)kCGWindowName];
+                    CGFloat top = CGRectGetMaxY(CGDisplayBounds(CGMainDisplayID()));
+                    NSRect cocoaTarget = NSMakeRect(target.origin.x, top-CGRectGetMaxY(target),
+                        target.size.width, target.size.height);
+                    BOOL insideUsableFrame = NO;
+                    for (NSScreen *screen in NSScreen.screens)
+                        if (NSContainsRect(screen.visibleFrame, cocoaTarget)) insideUsableFrame = YES;
                     if (dock && sharing && (sharing.intValue == kCGWindowSharingNone ||
                         sharing.intValue == kCGWindowSharingReadOnly) &&
-                        [entry[(__bridge id)kCGWindowName] length] == 0 && hit == window) continue;
+                        (!name.length || [name isEqualToString:@"Dock"]) && insideUsableFrame && hit == window) continue;
                 }
                 if (blocker) {
                     *blocker = (FrameBlocker){pid, layer, sharing ? sharing.intValue : -1, dock,
