@@ -75,6 +75,28 @@ scope's observed authorization category (`task_grant` for ordinary controls);
 context, not permission to weaken an observed account or security category.
 Keyboard actions use `keys: ["ENTER"]`, not a singular `key` field.
 
+For a deterministic Blender workflow, inspect the installed runtime and its
+platform capabilities first. Windows exact-window foreground pixel tasks support
+the separately granted `raw_input/key_sequence` action. Submit 1–64 ordered
+taps or chords in `keys` with one fresh observation on the same connection.
+The [modeling](../../examples/blender-extrude-column.json) and
+[rig animation](../../examples/blender-rig-keyframes.json) actions use
+`delay_ms=0` with the default English Blender keymap. End the batch when the
+next choice depends on the UI. A stopped sequence may have delivered a prefix.
+
+Keep the Agent frame visible. Check `result.banner.target_frame_visible` and
+the target's foreground state. If another surface covers the editor, inspect
+the refusal and previously completed work before issuing any input. Reuse
+`post_snapshot.observation_id` when continuing visually. For a terminal edit
+with a typed scene readback, verify the mesh, bone hierarchy or animation
+curves with `capture_after=false`.
+
+Compare client wall time through verified completion with
+`result.delivery.key_sequence_timing.dispatch_ms` and `inter_step_wait_ms`.
+Record image bytes separately from Host-reported model usage. On macOS or
+Linux, use only the exact platform capabilities advertised by the runtime.
+Windows foreground macros and the execution frame require their Windows backend.
+
 Raw `x`/`y` refer to the encoded image dimensions in `coordinate_space`, never
 UIA virtual-desktop bounds or the size of an on-screen preview. Convert a
 native point using `(screen_x - source_rect[0]) * width / source_rect[2]` and
