@@ -1554,6 +1554,8 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
         .expect("the original closed raw-input branch remains explicit")["properties"];
     let expected_actions = [
         "click",
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        "move",
         "double_click",
         "right_click",
         "toggle",

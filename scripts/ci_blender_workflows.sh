@@ -69,5 +69,9 @@ case "$RUNNER_OS" in
     ;;
 esac
 runner+=(--binary "$binary" --blender "$blender")
-"${runner[@]}" --report "$RUNNER_TEMP/blender-workflows.json"
-"${runner[@]}" --pointer-sequence --report "$RUNNER_TEMP/blender-pointer.json"
+# Each invocation owns a fresh Blender process. Collect both application
+# readbacks even when one fixture fails, and keep the CI result failing.
+status=0
+"${runner[@]}" --report "$RUNNER_TEMP/blender-workflows.json" || status=$?
+"${runner[@]}" --pointer-sequence --report "$RUNNER_TEMP/blender-pointer.json" || status=$?
+exit "$status"

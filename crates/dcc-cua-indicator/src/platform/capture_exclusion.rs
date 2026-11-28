@@ -386,13 +386,40 @@ pub(super) fn begin_with_gate(
             ));
         }
         if Instant::now() >= deadline {
-            return Err(IndicatorError::CaptureExclusion(
-                "timed out while excluding DCC-CUA overlays from exact-window capture".into(),
-            ));
+            let mut visible: Vec<(DccCuaOverlayKind, u32, usize)> = Vec::new();
+            let _ = unsafe {
+                EnumWindows(
+                    Some(visible_overlay_owner),
+                    LPARAM(std::ptr::from_mut(&mut visible) as isize),
+                )
+            };
+            return Err(IndicatorError::CaptureExclusion(format!(
+                "timed out while excluding DCC-CUA overlays from exact-window capture (presenters {acknowledged}/{registered}, visible overlays {visible:?})",
+            )));
         }
         thread::sleep(Duration::from_millis(1));
     }
     Ok(guard)
+}
+
+unsafe extern "system" fn visible_overlay_owner(window: HWND, context: LPARAM) -> BOOL {
+    let visible = unsafe { &mut *(context.0 as *mut Vec<(DccCuaOverlayKind, u32, usize)>) };
+    if visible.len() < 8 && unsafe { IsWindowVisible(window) }.as_bool() {
+        let mut class = [0_u16; 128];
+        let len = unsafe { GetClassNameW(window, &mut class) };
+        if let Some(kind) = dcc_cua_overlay_kind(&String::from_utf16_lossy(&class[..len as usize]))
+        {
+            let mut pid = 0;
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                    window,
+                    Some(&mut pid),
+                )
+            };
+            visible.push((kind, pid, window.0 as usize));
+        }
+    }
+    BOOL(1)
 }
 
 unsafe extern "system" fn check_hidden_overlay(window: HWND, context: LPARAM) -> BOOL {
