@@ -60,9 +60,9 @@ Linux CI compiles the exact pull-request head and runs two real Xvfb checks:
 - The core session test verifies a fresh second frame, no SDK/provider/input
   calls, refusal after destroy/recreate with the same PID/XID, and cancellation
   while a private Xvfb server stalls, followed by bounded stop without publication.
-- A native empty-shape test admits a mapped full-screen sibling only when its
-  X11 bounding shape is empty, and refuses capture when that shape becomes
-  nonempty. Shape changes remain part of the publication fence.
+- A native shape test admits a full-screen sibling whose X11 bounding shape
+  is empty or wholly outside the target. One overlapping pixel refuses capture.
+  Shape changes remain part of the publication fence.
 - The real read-only SDK constructor exposes an empty DCC-facing tool inventory;
   constructor configuration and CLI isolation tests cover disabled preparation
   and absence of theme/configuration writes. The optional SDK perception entry

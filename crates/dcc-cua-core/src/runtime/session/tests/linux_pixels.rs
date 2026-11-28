@@ -184,7 +184,7 @@ async fn linux_pixels_native_window_lifecycle_and_freshness() {
 #[ignore = "requires a private non-composited X11 display; exercised in Linux CI"]
 #[rstest]
 #[tokio::test]
-async fn linux_pixels_native_empty_shaped_sibling_does_not_occlude() {
+async fn linux_pixels_native_bounding_shape_must_intersect_the_target_to_occlude() {
     let fixture = Fixture::new();
     let overlay = fixture.connection.generate_id().unwrap();
     fixture.create(overlay, 0, 0, 0x00ff00);
@@ -235,13 +235,19 @@ async fn linux_pixels_native_empty_shaped_sibling_does_not_occlude() {
     session.live_observation = None;
     session.start_pixels_only().await.unwrap();
     session.screenshot_pixels_only().await.unwrap();
-    // Any nonempty shape restores conservative geometry-based occlusion,
-    // even if the shape's own pixels happen to be outside the target.
+    // A zero-input, full-screen sibling may paint only a few pixels outside the target.
     set_shape(&[Rectangle {
-        x: 200,
-        y: 150,
-        width: 20,
-        height: 20,
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 1,
+    }]);
+    session.screenshot_pixels_only().await.unwrap();
+    set_shape(&[Rectangle {
+        x: 99,
+        y: 79,
+        width: 1,
+        height: 1,
     }]);
     assert_eq!(
         session.screenshot_pixels_only().await.unwrap_err().code,

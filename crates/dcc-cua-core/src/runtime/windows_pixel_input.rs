@@ -1,6 +1,7 @@
 //! Explicit pixel input uses only local, final-boundary native dispatchers.
 use super::*;
 
+#[cfg(windows)]
 const DEFAULT_PIXEL_DRAG_DURATION_MS: u64 = 160;
 
 pub(super) fn validate_pixel_interrupt(

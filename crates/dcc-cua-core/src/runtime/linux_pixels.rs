@@ -427,14 +427,23 @@ impl LinuxPixels {
                     .reply()
                     .map_err(native)?;
                 let border = i32::from(geometry.border_width);
-                // Only a provably empty bounding shape is exempt. Retain
-                // conservative geometry for every nonempty or unshaped
-                // sibling, without trusting titles or input passthrough.
+                // The server's bounding-shape extents enclose every painted
+                // rectangle. Keep the border conservative on both paths.
+                let (x, y, width, height) = if shape.bounding_shaped {
+                    (
+                        shape.bounding_shape_extents_x,
+                        shape.bounding_shape_extents_y,
+                        shape.bounding_shape_extents_width,
+                        shape.bounding_shape_extents_height,
+                    )
+                } else {
+                    (0, 0, geometry.width, geometry.height)
+                };
                 let other = [
-                    i32::from(position.dst_x) - border,
-                    i32::from(position.dst_y) - border,
-                    i32::from(geometry.width) + 2 * border,
-                    i32::from(geometry.height) + 2 * border,
+                    i32::from(position.dst_x) + i32::from(x) - border,
+                    i32::from(position.dst_y) + i32::from(y) - border,
+                    i32::from(width) + 2 * border,
+                    i32::from(height) + 2 * border,
                 ];
                 if bounds[0] < other[0] + other[2]
                     && other[0] < bounds[0] + bounds[2]
@@ -532,7 +541,19 @@ impl LinuxPixels {
     }
 
     pub(super) fn capture(&mut self) -> ComputerUseResult<(Vec<u8>, WindowTarget, Value)> {
-        let result = self.capture_inner();
+        // A presenter can settle between bind and the first GetImage. Discard
+        // the stale frame and re-prove the same retained target once. Identity
+        // loss, occlusion and authorization failures remain terminal.
+        let first = self.capture_inner();
+        let result = match first {
+            Err(error) if error.code == ComputerUseErrorCode::StaleObservation && self.usable => {
+                self.capture_inner().map(|(data, target, mut provenance)| {
+                    provenance["capture_attempts"] = json!(2);
+                    (data, target, provenance)
+                })
+            }
+            result => result,
+        };
         if result.is_err() {
             self.usable = false;
         }
