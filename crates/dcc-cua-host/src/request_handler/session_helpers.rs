@@ -327,3 +327,21 @@ pub(crate) async fn refresh_session_health_input_and_target(host: &mut HostSessi
     }
     target_probe_failed
 }
+
+pub(crate) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
+    let HostError::ComputerUse(mut error) = error else {
+        return error;
+    };
+    let details = error.details.get_or_insert_default();
+    if details.action_attempted.is_none() {
+        details.phase = Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch);
+        details.action_attempted = Some(false);
+        details.input_sent = Some(dcc_cua_core::ComputerUseInputState::NotSent);
+        details.completion = Some(dcc_cua_core::ComputerUseCompletionState::Known);
+        details.effect_unknown = Some(false);
+        details.automatic_input = Some(false);
+        details.blind_retry = Some(false);
+        details.fresh_observation_required = Some(true);
+    }
+    HostError::ComputerUse(error)
+}

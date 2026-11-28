@@ -437,41 +437,33 @@ impl WindowsLiveCapture {
         }
         validate_live_native_evidence(&before, &before, false)?;
         let source_started = Instant::now();
-        let (frame, capture_mode) = match self {
+        let result = match self {
             Self::Persistent(capture) => match capture.next_measured_frame(FIRST_FRAME_TIMEOUT) {
-                Ok(frame) => (frame, "persistent_wgc"),
+                Ok(frame) => Ok((frame, "persistent_wgc")),
                 Err(error) if error.geometry_failure().is_some() => {
                     return Err(map_live_wgc_error(error));
                 }
-                Err(_) => self.reinitialize(target, "reinitialized_wgc_recovery")?,
+                Err(_) => self.reinitialize(target, "reinitialized_wgc_recovery"),
             },
-            Self::Uninitialized => match self.reinitialize(
+            Self::Uninitialized => self.reinitialize(
                 target,
                 if target.route == ExactWindowCaptureRoute::VerifiedVisible {
                     "persistent_wgc_exact_hwnd"
                 } else {
                     "persistent_wgc"
                 },
-            ) {
-                Ok(frame) => frame,
-                Err(error)
-                    if target.route == ExactWindowCaptureRoute::VerifiedVisible
-                        && error.code == ComputerUseErrorCode::CaptureFailed =>
-                {
-                    // Keep the old visible proof as a capability fallback. A
-                    // successful exact WGC source is preferred even when the
-                    // executable has multiple roots, and no foreground or
-                    // desktop visibility is required on that path. Return one
-                    // retryable error before the next cycle acquires the
-                    // exclusion guard for the visible fallback.
-                    *self = Self::VerifiedVisible;
-                    return Err(error);
-                }
-                Err(error) => return Err(error),
-            },
+            ),
             Self::VerifiedVisible => unreachable!("visible producer returned above"),
             Self::Prepared(_) => unreachable!("prepared producer returned above"),
         };
+        let (frame, capture_mode) = result.inspect_err(|error| {
+            if target.route == ExactWindowCaptureRoute::VerifiedVisible
+                && error.code == ComputerUseErrorCode::CaptureFailed
+            {
+                // Acquire exclusion on the next frame before capturing visible pixels.
+                *self = Self::VerifiedVisible;
+            }
+        })?;
         let source_capture_duration = source_started.elapsed();
         let after = target.evidence(true)?;
         validate_live_native_evidence(&before, &after, false)?;

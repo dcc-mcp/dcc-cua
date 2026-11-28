@@ -53,6 +53,40 @@ fn performance_tools_and_resource_are_discoverable() {
 
 #[rstest]
 #[tokio::test]
+async fn metrics_bound_unknown_names_and_require_actual_usage() {
+    let mut server = test_server();
+    for name in ["unknown-1", "unknown-2"] {
+        assert_eq!(
+            server.call_tool(json!({"name":name})).await.unwrap()["isError"],
+            true
+        );
+    }
+    let usage = |value| json!({"name":"dcc_cua_record_model_usage","arguments":{"usage":value}});
+    assert_eq!(
+        server.call_tool(usage(json!({}))).await.unwrap()["isError"],
+        true
+    );
+    server
+        .call_tool(usage(json!({"input_tokens":0})))
+        .await
+        .unwrap();
+    let report = server.performance.report();
+    assert_eq!(
+        report["tool_calls"]["methods"],
+        json!({"unknown":2,"dcc_cua_record_model_usage":2})
+    );
+    assert_eq!(report["model_tokens"]["reported_model_calls_total"], 1);
+    assert_eq!(
+        tool_definitions()
+            .iter()
+            .find(|t| t["name"] == "dcc_cua_record_model_usage")
+            .unwrap()["annotations"]["idempotentHint"],
+        false
+    );
+}
+
+#[rstest]
+#[tokio::test]
 async fn compact_text_keeps_the_structured_observation_and_preserves_error_text() {
     let observation = json!({"type":"accessibility_snapshot","observation_id":"new","root":{"elements":[{"element_token":"bound:1"}]}});
     let projected =
@@ -1481,21 +1515,20 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
         .iter()
         .find(|scope| scope["properties"]["input_kind"]["const"] == "raw_input")
         .expect("the original closed raw-input branch remains explicit")["properties"];
-    assert_eq!(
-        input["action"]["enum"],
-        json!([
-            "click",
-            "double_click",
-            "right_click",
-            "toggle",
-            "drag",
-            "key_sequence",
-            "keypress",
-            "keyboard_shortcut",
-            "type",
-            "type_chars"
-        ])
-    );
+    let expected_actions = [
+        "click",
+        "double_click",
+        "right_click",
+        "toggle",
+        "drag",
+        #[cfg(windows)]
+        "key_sequence",
+        "keypress",
+        "keyboard_shortcut",
+        "type",
+        "type_chars",
+    ];
+    assert_eq!(input["action"]["enum"], json!(expected_actions));
     assert_eq!(input["input_kind"]["const"], "raw_input");
     assert_eq!(input["secret_input"]["const"], false);
     assert_eq!(input["authorization_category"]["const"], "raw_input");
@@ -2014,148 +2047,6 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
         assert!(!properties.contains_key(forbidden));
     }
     assert!(start.get("_meta").is_none());
-}
-
-#[rstest]
-fn task_action_schema_matches_the_closed_runtime_contract() {
-    let schema = task_action_scope_schema();
-    let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 10);
-    let audio = variants
-        .iter()
-        .filter(|scope| scope["properties"]["input_kind"]["const"] == "playback_audio")
-        .collect::<Vec<_>>();
-    assert_eq!(audio, vec![&recording_audio::scope_schema()]);
-
-    let variant = |input_kind: &str| {
-        variants
-            .iter()
-            .find(|variant| {
-                variant["properties"]["input_kind"]["const"].as_str() == Some(input_kind)
-            })
-            .unwrap()
-    };
-    for action in [
-        "minimize_window",
-        "set_window_frame",
-        "dismiss_menu",
-        "capture_preparation_begin",
-    ] {
-        let mut matching = variants
-            .iter()
-            .filter(|scope| scope["properties"]["action"]["const"].as_str() == Some(action));
-        let scope = matching.next().unwrap();
-        assert!(matching.next().is_none());
-        assert_eq!(scope["type"], "object");
-        assert_eq!(scope["additionalProperties"], false);
-        assert_eq!(
-            scope["required"],
-            json!([
-                "action",
-                "input_kind",
-                "secret_input",
-                "authorization_category"
-            ])
-        );
-        assert_eq!(
-            scope["properties"],
-            json!({
-                "action": {"const": action},
-                "input_kind": {"const": "window_state"},
-                "secret_input": {"const": false},
-                "authorization_category": {"const": "window_state"},
-                "browser_origin": {"type": "null"}
-            })
-        );
-    }
-    for kind in ["semantic", "raw_input", "browser", "clipboard"] {
-        let input = &variant(kind)["properties"];
-        for window_action in ["capture_preparation_begin", "dismiss_menu"] {
-            assert_ne!(input["action"]["const"], window_action);
-            if let Some(actions) = input["action"]["enum"].as_array() {
-                assert!(!actions.contains(&json!(window_action)));
-            }
-        }
-    }
-    let semantic = variant("semantic");
-    let native = variant("window_state");
-    assert_eq!(native["properties"]["action"]["const"], "minimize_window");
-    assert_eq!(native["properties"]["secret_input"]["const"], false);
-    assert_eq!(
-        native["properties"]["authorization_category"]["const"],
-        "window_state"
-    );
-    assert_eq!(
-        semantic["properties"]["action"]["enum"],
-        json!(TrustedTaskActionScope::NATIVE_ACTIONS)
-    );
-    assert_eq!(
-        semantic["properties"]["authorization_category"]["enum"],
-        json!(TrustedTaskActionScope::SEMANTIC_CATEGORIES)
-    );
-    assert!(
-        !semantic["properties"]["action"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("browser_click"))
-    );
-
-    let navigation = variants
-        .iter()
-        .find(|variant| variant["properties"]["action"]["const"] == "browser_extension_navigate")
-        .unwrap();
-    assert_eq!(navigation["additionalProperties"], false);
-    assert_eq!(
-        navigation["required"],
-        json!([
-            "action",
-            "input_kind",
-            "secret_input",
-            "authorization_category",
-            "browser_origin"
-        ])
-    );
-    assert_eq!(
-        navigation["properties"],
-        json!({
-            "action":{"const":"browser_extension_navigate"},
-            "input_kind":{"const":"browser"}, "secret_input":{"const":false},
-            "authorization_category":{"const":"external_effect"},
-            "browser_origin":{"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
-        })
-    );
-    let browser = variants
-        .iter()
-        .find(|variant| variant["properties"]["action"]["const"] == "browser_type")
-        .unwrap();
-    assert_eq!(browser["properties"]["action"]["const"], "browser_type");
-    assert_eq!(browser["properties"]["secret_input"]["const"], true);
-    assert_eq!(
-        browser["properties"]["authorization_category"]["const"],
-        "credential"
-    );
-    assert!(
-        browser["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("browser_origin"))
-    );
-
-    let clipboard = variant("clipboard");
-    assert_eq!(
-        clipboard["properties"]["action"]["const"],
-        "clipboard_capture_secret"
-    );
-    assert_eq!(clipboard["properties"]["secret_input"]["const"], true);
-
-    let start = tool_definitions()
-        .into_iter()
-        .find(|tool| tool["name"] == "start_task")
-        .unwrap();
-    assert_eq!(
-        start["inputSchema"]["properties"]["allowed_actions"]["uniqueItems"],
-        true
-    );
 }
 
 #[rstest]

@@ -27,24 +27,6 @@ pub(super) fn validate_snapshot_capture_diagnostics(
     Ok(())
 }
 
-pub(super) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
-    let HostError::ComputerUse(mut error) = error else {
-        return error;
-    };
-    let details = error.details.get_or_insert_default();
-    if details.action_attempted.is_none() {
-        details.phase = Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch);
-        details.action_attempted = Some(false);
-        details.input_sent = Some(dcc_cua_core::ComputerUseInputState::NotSent);
-        details.completion = Some(dcc_cua_core::ComputerUseCompletionState::Known);
-        details.effect_unknown = Some(false);
-        details.automatic_input = Some(false);
-        details.blind_retry = Some(false);
-        details.fresh_observation_required = Some(true);
-    }
-    HostError::ComputerUse(error)
-}
-
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -1841,10 +1823,11 @@ async fn handle_request_inner(
                             "key sequence lease",
                         )
                     })?;
+                let monotonic_base = Instant::now();
                 let remaining = lease
                     .expires_at_unix_ms
                     .saturating_sub(crate::task_authorization::unix_time_millis());
-                Some(Instant::now() + Duration::from_millis(remaining))
+                Some(monotonic_base + Duration::from_millis(remaining))
             } else {
                 None
             };

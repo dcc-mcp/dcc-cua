@@ -865,7 +865,6 @@ impl ComputerUseSession {
         }
         let mut capture_provenance = json!({
             "backend": capture_backend,
-            "native_source": final_capture.source,
             "pixels_captured": true,
             "scope": "window",
             "whole_desktop_capture": false,
@@ -880,6 +879,7 @@ impl ComputerUseSession {
         }
         #[cfg(windows)]
         {
+            capture_provenance["native_source"] = json!(final_capture.source);
             attach_capture_visibility(
                 &mut capture_provenance,
                 final_capture.mode,

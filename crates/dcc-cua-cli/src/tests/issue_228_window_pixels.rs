@@ -108,6 +108,19 @@ fn manifest_advertises_the_provider_free_exact_window_contract() {
     assert_eq!(manifest["runtime"]["backend"], "cua-driver-sdk");
     assert_eq!(manifest["runtime"]["separate_driver_required"], false);
     assert_eq!(
+        manifest["runtime"]["exact_window_pixels"]["key_sequence"]["capability"],
+        "guarded_key_sequence_v1"
+    );
+    assert!(
+        manifest::linux_exact_window_pixels()
+            .get("key_sequence")
+            .is_none()
+    );
+    assert_eq!(
+        dcc_cua_host::host_capabilities(false).contains(&"guarded_key_sequence_v1"),
+        cfg!(windows)
+    );
+    assert_eq!(
         manifest["runtime"]["exact_window_pixels"]["cli_flag"],
         "--pixels-only"
     );

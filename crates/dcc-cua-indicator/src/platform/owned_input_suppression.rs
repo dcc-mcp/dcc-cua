@@ -1,6 +1,5 @@
 //! A private request channel to one renderer. No HWNDs or peer enumeration
 //! cross this boundary: only its window-owning thread changes presentation.
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,7 +18,7 @@ struct Requests {
 pub(super) struct RendererSuppression {
     requests: Mutex<Requests>,
     changed: Condvar,
-    pub(super) execution_frame_visible: AtomicBool,
+    pub(super) execution_frame: Mutex<Option<super::execution_frame::Exposure>>,
 }
 
 impl RendererSuppression {
@@ -90,7 +89,9 @@ impl RendererSuppression {
     }
 
     pub(super) fn stop(&self) {
-        self.execution_frame_visible.store(false, Ordering::Release);
+        if let Ok(mut frame) = self.execution_frame.lock() {
+            *frame = None;
+        }
         if let Ok(mut requests) = self.requests.lock() {
             requests.stopped = true;
             requests.hidden = false;

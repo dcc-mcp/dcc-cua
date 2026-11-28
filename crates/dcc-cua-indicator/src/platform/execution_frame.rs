@@ -1,4 +1,6 @@
 use super::*;
+mod exposure;
+pub(super) use exposure::Exposure;
 use windows::Win32::Graphics::Gdi::CreateRectRgn;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
@@ -49,7 +51,7 @@ impl ExecutionFrame {
         &mut self,
         target: HWND,
         geometry: Option<TargetGeometry>,
-    ) -> Result<bool, IndicatorError> {
+    ) -> Result<Option<Exposure>, IndicatorError> {
         if !self.window.still_owned() {
             return Err(IndicatorError::Rendering(
                 "execution frame identity changed".into(),
@@ -57,7 +59,7 @@ impl ExecutionFrame {
         }
         let Some(geometry) = geometry else {
             self.hide();
-            return Ok(false);
+            return Ok(None);
         };
         let depth = scale(3, geometry.dpi);
         let monitor = read_monitor_geometry(target)?;
@@ -68,11 +70,11 @@ impl ExecutionFrame {
         };
         let Some(placement) = placement else {
             self.hide();
-            return Ok(false);
+            return Ok(None);
         };
         if self.placement == Some(placement) && unsafe { IsWindowVisible(self.window.0) }.as_bool()
         {
-            return Ok(true);
+            return Ok(Some(Exposure::new(&self.window, placement, monitor, depth)));
         }
         match placement {
             Placement::Ring(geometry) => self.place(target, geometry, depth)?,
@@ -97,7 +99,7 @@ impl ExecutionFrame {
             })?,
         }
         self.placement = Some(placement);
-        Ok(unsafe { IsWindowVisible(self.window.0) }.as_bool())
+        Ok(Some(Exposure::new(&self.window, placement, monitor, depth)))
     }
 
     fn hide(&mut self) {
@@ -211,63 +213,4 @@ fn has_outer_edge(target: TargetGeometry, monitor: MonitorGeometry, depth: i32) 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "requires an interactive Windows desktop with DWM"]
-    fn compositor_accepts_the_owned_execution_frame() {
-        let _frame = ExecutionFrame::new().unwrap();
-    }
-
-    #[test]
-    fn exterior_edge_must_fit_on_the_targets_monitor() {
-        let monitor = MonitorGeometry {
-            left: -1920,
-            top: 0,
-            right: 0,
-            bottom: 1080,
-            work_left: -1920,
-            work_top: 0,
-            work_right: 0,
-            work_bottom: 1040,
-        };
-        let full = TargetGeometry {
-            x: -1920,
-            y: 0,
-            width: 1920,
-            height: 1040,
-            dpi: 96,
-        };
-        assert!(!has_outer_edge(full, monitor, 3));
-        assert_eq!(monitor_edge(full, monitor, 3), Some([-1920, 1040, 1920, 3]));
-        assert_eq!(
-            monitor_edge(
-                TargetGeometry {
-                    height: 1080,
-                    ..full
-                },
-                monitor,
-                3
-            ),
-            None
-        );
-        assert!(has_outer_edge(
-            TargetGeometry {
-                height: 1037,
-                ..full
-            },
-            monitor,
-            3
-        ));
-        assert!(!has_outer_edge(
-            TargetGeometry {
-                x: 100,
-                y: 2000,
-                ..full
-            },
-            monitor,
-            3
-        ));
-    }
-}
+mod tests;

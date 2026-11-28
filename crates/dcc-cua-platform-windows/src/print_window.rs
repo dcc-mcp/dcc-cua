@@ -117,6 +117,9 @@ fn read_printed_bitmap(
             "PrintWindow bitmap readback returned {rows} of {height} rows"
         )));
     }
+    for pixel in bgra.as_chunks_mut::<4>().0 {
+        pixel[3] = 255; // BI_RGB reserves this byte instead of encoding alpha.
+    }
     Ok(bgra)
 }
 
@@ -124,6 +127,44 @@ fn read_printed_bitmap(
 /// The target must remain the same native process/window instance across the
 /// caller's before/after evidence fence.
 pub fn capture_print_window(
+    process_id: u32,
+    window_handle: u64,
+) -> Result<PrintWindowCapture, PrintWindowCaptureError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    struct Permit;
+    impl Drop for Permit {
+        fn drop(&mut self) {
+            BUSY.store(false, Ordering::Release);
+        }
+    }
+
+    if BUSY
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(capture_error(
+            "another PrintWindow request is still rendering",
+        ));
+    }
+    let permit = Permit;
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("dcc-cua-print-window".into())
+        .spawn(move || {
+            // A timeout cannot cancel GDI. Keep all handles and the slot owned by this worker.
+            let _permit = permit;
+            let _ = tx.send(render_window(process_id, window_handle));
+        })
+        .map_err(|error| capture_error(format!("start PrintWindow worker: {error}")))?;
+    rx.recv_timeout(Duration::from_millis(750))
+        .map_err(|error| capture_error(format!("PrintWindow readback unavailable: {error}")))?
+}
+
+fn render_window(
     process_id: u32,
     window_handle: u64,
 ) -> Result<PrintWindowCapture, PrintWindowCaptureError> {
@@ -195,14 +236,4 @@ pub fn capture_print_window(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{MAX_PRINT_WINDOW_PIXELS, pixel_byte_len};
-
-    #[test]
-    fn print_window_pixel_size_is_bounded() {
-        assert_eq!(pixel_byte_len(2, 3).expect("valid size"), 24);
-        assert!(pixel_byte_len(0, 3).is_err());
-        assert!(pixel_byte_len(8_193, 8_193).is_err());
-        assert!(MAX_PRINT_WINDOW_PIXELS > 0);
-    }
-}
+mod tests;

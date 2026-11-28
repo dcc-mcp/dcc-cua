@@ -275,6 +275,13 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             },
             "exact_window_pixels": {
                 "availability": "windows",
+                "key_sequence": {
+                    "capability": "guarded_key_sequence_v1",
+                    "action_scope": "raw_input/key_sequence",
+                    "delivery_mode": "foreground",
+                    "requires_visible_execution_frame": true,
+                    "max_steps": 64,
+                },
                 "cli_flag": "--pixels-only",
                 "required_selectors": ["--pid", "--window-id"],
                 "accessibility_provider_started": false,

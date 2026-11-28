@@ -956,7 +956,7 @@ fn fence_diagnostic_is_reported_only_on_the_rejected_attempt(#[case] accepted: b
     }
 }
 
-#[test]
+#[rstest]
 fn key_sequence_releases_each_tap_and_orders_modifier_chords() {
     let mut backend = FakeBackend::new();
     let steps = ["A", "A", "CTRL+A"].map(String::from);
@@ -987,7 +987,7 @@ fn key_sequence_releases_each_tap_and_orders_modifier_chords() {
     );
 }
 
-#[test]
+#[rstest]
 fn invalid_late_chord_sends_no_input() {
     let mut backend = FakeBackend::new();
     let result = run_key_sequence(
@@ -1001,7 +1001,7 @@ fn invalid_late_chord_sends_no_input() {
     assert!(backend.mutations.is_empty());
 }
 
-#[test]
+#[rstest]
 fn losing_the_execution_frame_stops_before_the_next_chord() {
     let mut backend = FakeBackend::new();
     let mut visibility = [true, false].into_iter();
@@ -1014,7 +1014,7 @@ fn losing_the_execution_frame_stops_before_the_next_chord() {
     assert_eq!(backend.mutations.len(), 1);
 }
 
-#[test]
+#[rstest]
 fn interruption_stops_a_key_sequence_before_the_next_tap() {
     let mut backend = FakeBackend::new();
     backend.interrupt_after_mutations = Some(1);
@@ -1025,7 +1025,7 @@ fn interruption_stops_a_key_sequence_before_the_next_tap() {
     assert_eq!(backend.mutations.len(), 1);
 }
 
-#[test]
+#[rstest]
 fn partial_key_sequence_chord_releases_only_inserted_modifiers() {
     let mut backend = FakeBackend::new();
     backend.partial_mutation = Some((0, 1));

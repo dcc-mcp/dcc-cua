@@ -1,0 +1,186 @@
+"""Run the two example macros on a disposable foreground Blender window via DCC-CUA."""
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+from test_owned_workflow_e2e import attest, client, structured
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CASES = [("model", "blender-extrude-column.json"), ("rig", "blender-rig-keyframes.json")]
+
+
+def unique_window(pid, directory):
+    if sys.platform == "darwin":
+        finder = directory / "find-window"
+        swift = directory / "find.swift"
+        swift.write_text("""
+import CoreGraphics
+import Foundation
+let pid = Int(CommandLine.arguments[1])!
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid && window[kCGWindowLayer as String] as? Int == 0 {
+    if let id = window[kCGWindowNumber as String] as? Int { print(id) }
+}
+""", encoding="utf-8")
+        subprocess.run(["swiftc", str(swift), "-o", str(finder)], check=True, timeout=120)
+        command = [str(finder), str(pid)]
+    elif os.name == "nt":
+        command = ["powershell", "-NoProfile", "-Command",
+                   f"(Get-Process -Id {pid} -ErrorAction Stop).MainWindowHandle.ToInt64()"]
+    else:
+        command = ["wmctrl", "-lp"]
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        lines = subprocess.check_output(command, text=True, timeout=5).splitlines()
+        if sys.platform.startswith("linux"):
+            candidates = [int(parts[0], 16) for line in lines
+                          if len(parts := line.split()) >= 3 and parts[2] == str(pid)]
+        else:
+            candidates = [int(line) for line in lines if line.isdecimal() and int(line) > 0]
+        if len(candidates) == 1:
+            return candidates[0]
+        time.sleep(0.1)
+    raise RuntimeError("no unique native window for the disposable Blender process")
+
+
+def angle(first, second):
+    norm = math.sqrt(sum(v * v for v in first) * sum(v * v for v in second))
+    cosine = abs(sum(a * b for a, b in zip(first, second))) / norm
+    return math.degrees(2 * math.acos(min(1, cosine)))
+
+
+def verified(case, state, before):
+    if state["mode"] != "OBJECT" or set(state["objects"]) - before != {state.get("name")}:
+        return False
+    if case == "model":
+        return (state.get("name", "").startswith("macrocolumn") and state.get("vertices") == 8
+                and state.get("faces") == 6 and state.get("height") == 2 and state.get("scale") == [3, 1, 1])
+    bones = state.get("bones", [])
+    if state["frame"] != 9 or len(bones) != 3 or bones[0]["parent"] is not None:
+        return False
+    if [(b["head"], b["tail"]) for b in bones] != [([0,0,0], [0,0,1]), ([0,0,1], [0,0,2]), ([0,0,2], [1,0,2])]:
+        return False
+    if any(not bones[i]["connected"] or bones[i]["parent"] != bones[i-1]["name"] for i in (1, 2)):
+        return False
+    curves = state.get("curves", [])
+    for path in {c["path"] for c in curves if c["path"].endswith(".rotation_quaternion")}:
+        channels = sorted((c for c in curves if c["path"] == path), key=lambda c: c["index"])
+        if len(channels) != 4 or not all([p[0] for p in c["points"]] == [1, 9] for c in channels):
+            continue
+        first, last = ([c["points"][i][1] for c in channels] for i in (0, 1))
+        if abs(angle(first, last) - 30) < 0.05 and 10 < angle(first, [c["mid"] for c in channels]) < 20:
+            return True
+    return False
+
+
+def wait_scene(directory, predicate):
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        file = directory / "scene.json"
+        if file.is_file():
+            state = json.loads(file.read_text(encoding="utf-8"))
+            if predicate(state):
+                return state
+        time.sleep(0.03)
+    raise RuntimeError("Blender scene readback did not confirm the expected state")
+
+
+def benchmark(binary, pid, window, directory, report):
+    manifest = json.loads(subprocess.check_output([binary, "manifest"], text=True))
+    capability = manifest["runtime"].get("exact_window_pixels", {}).get("key_sequence")
+    actions = [{"action": name, "input_kind": "raw_input", "secret_input": False,
+                "authorization_category": "raw_input"} for name in ("click", "key_sequence") if capability]
+    start = time.perf_counter()
+    with client(binary, os.environ.copy(), None) as mcp:
+        report["initialize_ms"] = round((time.perf_counter() - start) * 1000)
+        start = time.perf_counter()
+        started = structured(mcp.tool("start_task", {
+            "application_label": "Disposable Blender workflow benchmark", "surface": "window",
+            "observation_mode": "pixels_only", "target_process_id": pid, "target_window_handle": window,
+            "allowed_methods": ["snapshot", "execute_action"] if capability else ["snapshot"],
+            "allowed_actions": actions, "ttl_minutes": 5}))
+        report["start_task_ms"] = round((time.perf_counter() - start) * 1000)
+        task = started["task_id"]
+        mcp.tasks.append(task)
+        assert attest(started) == (pid, window)
+        report["runtime"] = started["runtime_version"]
+        (directory / "bound").touch()
+
+        def call(method, params):
+            begin = time.perf_counter()
+            result = mcp.call(task, method, params)
+            receipt = structured(result)
+            if receipt.get("success") is False:
+                raise RuntimeError(f"{method} failed: {receipt.get('reason', 'unknown')}")
+            metrics = {"method": method, "roundtrip_ms": round((time.perf_counter() - begin) * 1000),
+                       "image_base64_bytes": sum(len(v["data"]) for v in result.get("content", []) if v["type"] == "image")}
+            report["calls"].append(metrics)
+            return receipt
+
+        snapshot = call("snapshot", {})
+        observation = snapshot["observation"]
+        assert (observation["process_id"], observation["window_handle"]) == (pid, window)
+        if not capability:
+            raise RuntimeError("guarded_key_sequence_v1 is absent from the native runtime manifest")
+        state = wait_scene(directory, lambda s: "viewport_fraction" in s)
+        x, y = state["viewport_fraction"]
+        click = {"action": "click", "input_kind": "raw_input", "intent": "navigate", "delivery_mode": "foreground",
+                 "x": round(x * observation["width"]), "y": round(y * observation["height"])}
+        result = call("execute_action", {"observation_id": snapshot["observation_id"], "action": click, "capture_after": True})
+        observation_id = result["post_snapshot"]["observation_id"]
+        for case, example in CASES:
+            before = set(state["objects"])
+            action = json.loads((ROOT / "examples" / example).read_text(encoding="utf-8"))
+            begin = time.perf_counter()
+            result = call("execute_action", {"observation_id": observation_id, "action": action, "capture_after": True})
+            assert result["status"] == "succeeded" and result["result"]["banner"]["target_frame_visible"] is True
+            state = wait_scene(directory, lambda s: verified(case, s, before))
+            report["cases"].append({"case": case, "steps": len(action["keys"]), "verified": True,
+                                    "verified_ms": round((time.perf_counter() - begin) * 1000),
+                                    "scene": state})
+            observation_id = result["post_snapshot"]["observation_id"]
+        report["metrics"] = structured(mcp.tool("dcc_cua_metrics", {}))
+        mcp.stop(task)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--blender", type=Path, required=True)
+    parser.add_argument("--report", type=Path, required=True)
+    args = parser.parse_args()
+    report = {"platform": sys.platform, "calls": [], "cases": [], "success": False}
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            env = dict(os.environ, DCC_CUA_BLENDER_BENCH=folder, BLENDER_USER_CONFIG=str(directory / "config"))
+            process = subprocess.Popen([str(args.blender.resolve()), "--factory-startup", "-p", "80", "90",
+                                        "1280", "800", "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
+                                       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                window = unique_window(process.pid, directory)
+                benchmark(args.binary.resolve(), process.pid, window, directory, report)
+                report["success"] = True
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+    except Exception as error:
+        report["failure"] = str(error)
+        raise
+    finally:
+        args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

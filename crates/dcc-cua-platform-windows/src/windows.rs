@@ -1142,6 +1142,7 @@ pub fn restore_and_activate_window(
 ) -> Result<crate::ExactWindowRestoreOutcome, crate::ExactWindowRestoreError> {
     use crate::exact_window_restore::{
         classify_restore_result, run_exact_restore_activate_sequence,
+        run_restored_foreground_request,
     };
     let expected = require_exact_window_handle(target, "restore")
         .map_err(crate::ExactWindowRestoreError::BeforeDispatch)?;
@@ -1183,13 +1184,40 @@ pub fn restore_and_activate_window(
                         None,
                     ));
             }
-            attempted.set(true);
-            let instance = native_instance
-                .get()
-                .expect("restore sequence bound its first native read");
-            activate_window_after_gate(target, instance, &mut diagnostic, &mut || {
-                (activation_gate.borrow_mut())()
-            })?;
+            let activation_reads = std::cell::Cell::new(0u8);
+            let activation_result = run_restored_foreground_request(
+                target,
+                native_instance
+                    .get()
+                    .expect("restore sequence bound its first native read"),
+                || (activation_gate.borrow_mut())(),
+                || {
+                    activation_reads.set(activation_reads.get().saturating_add(1));
+                    crate::exact_window_native_state(target.process_id, target.window_handle)
+                },
+                || {
+                    attempted.set(true);
+                    let api_return = unsafe { SetForegroundWindow(expected) };
+                    diagnostic
+                        .attempts
+                        .push(WindowsForegroundActivationAttempt::new(
+                            WindowsForegroundActivationPhase::InitialForegroundRequest,
+                            api_return,
+                            None,
+                            None,
+                        ));
+                    Ok(())
+                },
+                || thread::sleep(Duration::from_millis(5)),
+            );
+            diagnostic.foreground_poll_count += activation_reads.get().saturating_sub(1);
+            let activated = activation_result?;
+            if !activated {
+                return Err(foreground_activation_refused(
+                    "Windows refused the single explicit restored-target foreground request",
+                    diagnostic.clone(),
+                ));
+            }
             synchronize_activated_input_queue(expected, &diagnostic)
         },
         || thread::sleep(Duration::from_millis(10)),

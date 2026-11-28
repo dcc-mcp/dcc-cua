@@ -76,7 +76,8 @@ context, not permission to weaken an observed account or security category.
 Keyboard actions use `keys: ["ENTER"]`, not a singular `key` field.
 
 For a deterministic Blender workflow, inspect the installed runtime and its
-platform capabilities first. Windows exact-window foreground pixel tasks support
+platform capabilities first. Look for `guarded_key_sequence_v1` in the Host
+capabilities. Windows exact-window foreground pixel tasks support
 the separately granted `raw_input/key_sequence` action. Submit 1–64 ordered
 taps or chords in `keys` with one fresh observation on the same connection.
 The [modeling](../../examples/blender-extrude-column.json) and

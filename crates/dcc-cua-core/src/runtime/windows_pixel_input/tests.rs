@@ -449,7 +449,7 @@ fn pixel_drag_accepts_a_sampled_brush_trajectory() {
         .expect("one guarded raw-input action may carry a sampled brush trajectory");
 }
 
-#[test]
+#[rstest]
 fn pixel_drag_rejects_interpolation_steps_for_a_sampled_trajectory() {
     let mut action = drag_action();
     action.path.insert(1, ComputerUsePoint { x: 42.0, y: 31.0 });
@@ -507,7 +507,7 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
 }
 
 #[cfg(windows)]
-#[test]
+#[rstest]
 fn pixel_drag_preserves_sampled_waypoints() {
     let mut action = drag_action();
     action.path = vec![

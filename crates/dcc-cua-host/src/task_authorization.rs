@@ -76,6 +76,7 @@ impl TrustedTaskActionScope {
         "right_click",
         "toggle",
         "drag",
+        #[cfg(windows)]
         "key_sequence",
         "keypress",
         "keyboard_shortcut",
@@ -151,6 +152,7 @@ impl TrustedTaskActionScope {
         "set_text",
         "set_value",
         "set_checked",
+        #[cfg(windows)]
         "key_sequence",
         "keypress",
         "press",
