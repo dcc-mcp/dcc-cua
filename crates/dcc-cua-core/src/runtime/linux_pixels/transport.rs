@@ -24,6 +24,10 @@ impl DeadlineStream {
         *self.deadline.lock().expect("X11 deadline mutex") = Instant::now() + OPERATION_TIMEOUT;
     }
 
+    pub(super) fn disconnect(&self) {
+        let _ = socket2::SockRef::from(&self.inner).shutdown(std::net::Shutdown::Both);
+    }
+
     fn remaining(&self) -> io::Result<Duration> {
         self.deadline
             .lock()

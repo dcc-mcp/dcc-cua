@@ -121,11 +121,47 @@ struct InputGuard<'a> {
 // own client, and application state readback run outside the server grab.
 struct DispatchFence(Arc<Connection>);
 
+impl DispatchFence {
+    fn acquire(connection: &Arc<Connection>) -> ComputerUseResult<Self> {
+        let cookie = connection.grab_server().map_err(|error| {
+            connection.stream().disconnect();
+            native(error)
+        })?;
+        // The server can already own the grab while its acknowledgement is pending.
+        let fence = Self(Arc::clone(connection));
+        cookie.check().map_err(native)?;
+        Ok(fence)
+    }
+}
+
 impl Drop for DispatchFence {
     fn drop(&mut self) {
-        let _ = self.0.ungrab_server();
-        let _ = self.0.flush();
+        self.0.stream().renew();
+        if !self
+            .0
+            .ungrab_server()
+            .is_ok_and(|cookie| cookie.check().is_ok())
+        {
+            // X11 releases a client's grabs when its transport disconnects.
+            self.0.stream().disconnect();
+        }
     }
+}
+
+#[cfg(test)]
+#[ignore = "requires a private Xvfb server"]
+#[rstest::rstest]
+fn linux_pixels_native_expired_fence_releases_its_grab() {
+    let (owner, _) = transport::connect().unwrap();
+    let owner = Arc::new(owner);
+    let (peer, _) = transport::connect().unwrap();
+    let fence = DispatchFence::acquire(&owner).unwrap();
+    std::thread::sleep(transport::OPERATION_TIMEOUT + Duration::from_millis(10));
+    drop(fence);
+    peer.stream().renew();
+    peer.get_input_focus().unwrap().reply().unwrap();
+    owner.stream().renew();
+    owner.get_input_focus().unwrap().reply().unwrap();
 }
 
 impl LinuxPixels {
@@ -135,9 +171,7 @@ impl LinuxPixels {
         guard: &InputGuard<'_>,
     ) -> ComputerUseResult<DispatchFence> {
         frame.check_escape()?;
-        let cookie = self.connection.grab_server().map_err(native)?;
-        let fence = DispatchFence(Arc::clone(&self.connection));
-        cookie.check().map_err(native)?;
+        let fence = DispatchFence::acquire(&self.connection)?;
         self.validate_input(guard)?;
         frame.require_exposed(self)?;
         Ok(fence)

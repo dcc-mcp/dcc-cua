@@ -130,22 +130,14 @@ impl LinuxPixels {
         if let Some(release) = held {
             // Only release the synthetic press on the original, surviving
             // client. There is no physical button held on the X server.
-            if self
-                .connection
-                .grab_server()
-                .map_err(native)?
-                .check()
-                .map_err(native)
-                .is_ok()
+            self.connection.stream().renew();
+            if let Ok(_fence) = DispatchFence::acquire(&self.connection)
+                && release.event == self.window
+                && self.usable
+                && self.drain_events(false).is_ok()
+                && process_identity(self.pid).is_ok_and(|process| process == self.process)
             {
-                let _fence = DispatchFence(Arc::clone(&self.connection));
-                if release.event == self.window
-                    && self.usable
-                    && self.drain_events(false).is_ok()
-                    && process_identity(self.pid).is_ok_and(|process| process == self.process)
-                {
-                    let _ = self.send_event(release, BUTTON_RELEASE_EVENT, 1, 1 << 8);
-                }
+                let _ = self.send_event(release, BUTTON_RELEASE_EVENT, 1, 1 << 8);
             }
         }
         result
