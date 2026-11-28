@@ -118,7 +118,7 @@ fn manifest_advertises_the_provider_free_exact_window_contract() {
     );
     assert_eq!(
         dcc_cua_host::host_capabilities(false).contains(&"guarded_key_sequence_v1"),
-        cfg!(any(windows, target_os = "linux"))
+        cfg!(any(windows, target_os = "linux", target_os = "macos"))
     );
     assert_eq!(
         manifest["runtime"]["exact_window_pixels"]["cli_flag"],

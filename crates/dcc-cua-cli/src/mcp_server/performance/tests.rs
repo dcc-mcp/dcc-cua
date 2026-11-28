@@ -70,3 +70,24 @@ fn post_snapshot_observation_is_counted_once_when_reused() {
     assert_eq!(report["observations"]["post_action_snapshots_total"], 1);
     assert_eq!(report["observations"]["post_snapshot_reuses_total"], 1);
 }
+
+#[rstest]
+fn reported_aliases_and_cache_accounting_use_the_same_input() {
+    let mut metrics = McpPerformance::new();
+    assert!(
+        metrics.record_model_usage(&json!({"input_tokens":null,"prompt_tokens":13,
+        "cached_input_tokens":7,"output_tokens":5}))
+    );
+    assert!(metrics.record_model_usage(&json!({"input_tokens":0,"prompt_tokens":9})));
+    let report = metrics.report();
+    assert_eq!(report["model_tokens"]["reported_total_tokens"], 18);
+    assert_eq!(
+        report["model_tokens"]["cache_measured_input_tokens_total"],
+        13
+    );
+    metrics.record_observation_required(&json!({"details":{"fresh_observation_required":true}}));
+    assert_eq!(
+        metrics.report()["observations"]["observation_required_total"],
+        1
+    );
+}

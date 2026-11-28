@@ -463,6 +463,7 @@ fn pixel_drag_rejects_interpolation_steps_for_a_sampled_trajectory() {
 #[cfg(windows)]
 #[rstest]
 #[case("valid", true)]
+#[case("closed_loop", true)]
 #[case("outside", false)]
 #[case("same_pixel", false)]
 #[case("redacted_sample", false)]
@@ -478,6 +479,10 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
     action.steps = Some(1);
     let mut observation = observed();
     match variant {
+        "closed_loop" => {
+            action.steps = None;
+            action.path.push(action.path[0].clone());
+        }
         "outside" => action.path[1].x = 400.0,
         "same_pixel" => action.path[1] = ComputerUsePoint { x: 10.9, y: 20.1 },
         "redacted_sample" => {
@@ -502,7 +507,11 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
     let result = physical_drag_points(&action, &observation);
     assert_eq!(result.is_ok(), accepted);
     if accepted {
-        assert_eq!(result.unwrap(), vec![(-290, 100), (-190, 140)]);
+        let mut expected = vec![(-290, 100), (-190, 140)];
+        if variant == "closed_loop" {
+            expected.push(expected[0]);
+        }
+        assert_eq!(result.unwrap(), expected);
     }
 }
 

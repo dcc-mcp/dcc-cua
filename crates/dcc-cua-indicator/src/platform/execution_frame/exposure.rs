@@ -18,19 +18,19 @@ impl Exposure {
         monitor: MonitorGeometry,
         depth: i32,
     ) -> Self {
-        let rect = |x, y, width, height| RECT {
+        let rect = |x: i32, y: i32, width: i32, height: i32| RECT {
             left: x,
             top: y,
-            right: x + width,
-            bottom: y + height,
+            right: x.saturating_add(width),
+            bottom: y.saturating_add(height),
         };
         let (bands, expected) = match placement {
             Placement::Edge([x, y, w, h]) => ([rect(x, y, w, h); 4], rect(x, y, w, h)),
             Placement::Ring(g) => {
-                let left = g.x - depth;
-                let top = g.y - depth;
-                let right = g.x + g.width;
-                let bottom = g.y + g.height;
+                let left = g.x.saturating_sub(depth);
+                let top = g.y.saturating_sub(depth);
+                let right = g.x.saturating_add(g.width);
+                let bottom = g.y.saturating_add(g.height);
                 (
                     [
                         rect(left, g.y, depth, g.height),
@@ -38,7 +38,12 @@ impl Exposure {
                         rect(g.x, top, g.width, depth),
                         rect(g.x, bottom, g.width, depth),
                     ],
-                    rect(left, top, g.width + depth * 2, g.height + depth * 2),
+                    RECT {
+                        left,
+                        top,
+                        right: right.saturating_add(depth),
+                        bottom: bottom.saturating_add(depth),
+                    },
                 )
             }
         };
@@ -47,14 +52,14 @@ impl Exposure {
             let right = b.right.min(monitor.right);
             let top = b.top.max(monitor.top);
             let bottom = b.bottom.min(monitor.bottom);
-            let w = (right - left).clamp(0, 24);
-            let h = (bottom - top).clamp(0, 24);
-            rect(
-                left + (right - left - w) / 2,
-                top + (bottom - top - h) / 2,
-                w,
-                h,
-            )
+            if left >= right || top >= bottom {
+                return RECT::default();
+            }
+            let width = right.saturating_sub(left);
+            let height = bottom.saturating_sub(top);
+            let w = width.min(24);
+            let h = height.min(24);
+            rect(left + (width - w) / 2, top + (height - h) / 2, w, h)
         });
         Self {
             window: window.0.0 as usize,

@@ -59,7 +59,11 @@ def read_scene():
     temporary = directory / "scene.tmp"
     if state != read_scene.previous:
         temporary.write_text(json.dumps(state), encoding="utf-8")
-        temporary.replace(directory / "scene.json")
+        try:
+            temporary.replace(directory / "scene.json")
+        except PermissionError:
+            # A Windows reader may briefly hold the destination without delete sharing.
+            return 0.05
         read_scene.previous = state
     return 0.05
 

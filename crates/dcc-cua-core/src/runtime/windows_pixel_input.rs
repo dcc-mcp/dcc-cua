@@ -131,7 +131,7 @@ fn physical_drag_points(
             .collect::<ComputerUseResult<Vec<_>>>()?
     };
     points.dedup();
-    if points.len() < 2 || points.first() == points.last() {
+    if points.len() < 2 {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "drag trajectory must contain two distinct physical pixels",

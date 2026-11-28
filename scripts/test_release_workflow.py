@@ -46,7 +46,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "f0865141de8b06a819ffe890f50776068f8c01709310701dc60a61cffeeb9d52"
+    "756ef9fcceb5e4da07fbd05b2fe870d4ea2d54c5754559207b7e2794a7c64811"
 )
 VERIFY_TIMEOUT = "${{ matrix.verify_job_minutes }}"
 

@@ -160,13 +160,7 @@ impl McpPerformance {
         {
             self.post_snapshot_reuses_total = self.post_snapshot_reuses_total.saturating_add(1);
         }
-        if response
-            .get("observation_required")
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            self.observation_required_total = self.observation_required_total.saturating_add(1);
-        }
+        self.record_observation_required(response);
         if let Some(id) = response
             .pointer("/post_snapshot/observation_id")
             .and_then(Value::as_str)
@@ -179,6 +173,14 @@ impl McpPerformance {
                 }
             }
             self.post_observation_ids.insert(id.to_owned());
+        }
+    }
+
+    pub(crate) fn record_observation_required(&mut self, response: &Value) {
+        if response["observation_required"] == true
+            || response.pointer("/details/fresh_observation_required") == Some(&Value::Bool(true))
+        {
+            self.observation_required_total = self.observation_required_total.saturating_add(1);
         }
     }
 
@@ -202,37 +204,20 @@ impl McpPerformance {
         let Some(usage) = usage.as_object() else {
             return false;
         };
-        let input = usage
-            .get("input_tokens")
-            .or_else(|| usage.get("prompt_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let output = usage
-            .get("output_tokens")
-            .or_else(|| usage.get("completion_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        if ![
-            "input_tokens",
-            "output_tokens",
-            "prompt_tokens",
-            "completion_tokens",
-        ]
-        .iter()
-        .any(|k| usage.get(*k).and_then(Value::as_u64).is_some())
-        {
+        let count = |name: &str| usage.get(name).and_then(Value::as_u64);
+        let input = count("input_tokens").or_else(|| count("prompt_tokens"));
+        let output = count("output_tokens").or_else(|| count("completion_tokens"));
+        if input.is_none() && output.is_none() {
             return false;
         }
         self.reported_model_calls_total = self.reported_model_calls_total.saturating_add(1);
-        self.reported_input_tokens_total = self.reported_input_tokens_total.saturating_add(input);
-        self.reported_output_tokens_total =
-            self.reported_output_tokens_total.saturating_add(output);
-        if let Some(cached) = usage.get("cached_input_tokens").and_then(Value::as_u64)
-            && usage
-                .get("input_tokens")
-                .or_else(|| usage.get("prompt_tokens"))
-                .and_then(Value::as_u64)
-                .is_some()
+        self.reported_input_tokens_total = self
+            .reported_input_tokens_total
+            .saturating_add(input.unwrap_or(0));
+        self.reported_output_tokens_total = self
+            .reported_output_tokens_total
+            .saturating_add(output.unwrap_or(0));
+        if let (Some(input), Some(cached)) = (input, count("cached_input_tokens"))
             && cached <= input
         {
             self.cache_samples = self.cache_samples.saturating_add(1);

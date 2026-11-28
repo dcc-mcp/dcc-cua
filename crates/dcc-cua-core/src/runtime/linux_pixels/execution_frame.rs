@@ -68,11 +68,6 @@ impl ExecutionFrame {
                 .map_err(native)?
                 .check()
                 .map_err(native)?;
-            connection
-                .map_window(id)
-                .map_err(native)?
-                .check()
-                .map_err(native)?;
             bands.push((id, rect));
         }
         if bands.is_empty() {
@@ -122,6 +117,13 @@ impl ExecutionFrame {
             .map_err(native)?
             .check()
             .map_err(native)?;
+        for &(id, _) in &bands {
+            connection
+                .map_window(id)
+                .map_err(native)?
+                .check()
+                .map_err(native)?;
+        }
         let frame = Self {
             connection,
             bands,
@@ -169,14 +171,18 @@ impl ExecutionFrame {
 
     pub(super) fn validate(&self, bound: &LinuxPixels) -> ComputerUseResult<()> {
         self.check_escape()?;
+        self.require_exposed(bound)
+    }
+
+    pub(super) fn require_exposed(&self, bound: &LinuxPixels) -> ComputerUseResult<()> {
         for &(id, rect) in &self.bands {
-            let attrs = self
+            let attrs = bound
                 .connection
                 .get_window_attributes(id)
                 .map_err(native)?
                 .reply()
                 .map_err(native)?;
-            let geometry = self
+            let geometry = bound
                 .connection
                 .get_geometry(id)
                 .map_err(native)?

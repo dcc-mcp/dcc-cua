@@ -826,7 +826,6 @@ impl TaskAuthorizationServer {
                         .into(),
                 );
             }
-            proposal.session_open_attempted = true;
             proposal.session = Some(
                 open_task_session(
                     &proposal_id,
@@ -996,12 +995,15 @@ impl TaskAuthorizationServer {
         let response = match response {
             Ok(response) => response,
             Err(error @ HostClientError::Remote { .. }) => {
-                return Ok(interaction_recovery::task_remote_error(
+                let result = interaction_recovery::task_remote_error(
                     &error,
                     &method,
                     &proposal_id,
                     proposal,
-                ));
+                );
+                self.performance
+                    .record_observation_required(&result["structuredContent"]);
+                return Ok(result);
             }
             Err(error) => return Err(error.to_string()),
         };
@@ -1057,6 +1059,7 @@ async fn open_task_session(
     .map_err(|_| startup_timeout("provider transport readiness"))??;
     // Retain the owner before hello/open-session can fail or be cancelled.
     // Closing the client transport requests cleanup; never abort admitted native work.
+    proposal.session_open_attempted = true;
     proposal.host_task = Some(OwnedHostTask::spawn(async move {
         process_connection_with_security_services(driver, host_stream, security_services)
             .await

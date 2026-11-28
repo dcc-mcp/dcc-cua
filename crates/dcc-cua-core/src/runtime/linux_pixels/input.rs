@@ -116,7 +116,49 @@ struct InputGuard<'a> {
     observation: &'a ComputerUseObservation,
 }
 
+// Fence only a single press/release group. Delays, Escape polling on its
+// own client, and application state readback run outside the server grab.
+struct DispatchFence<'a>(&'a Connection);
+
+impl Drop for DispatchFence<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.ungrab_server();
+        let _ = self.0.flush();
+    }
+}
+
 impl LinuxPixels {
+    fn dispatch_fence(
+        &self,
+        frame: &ExecutionFrame,
+        guard: &InputGuard<'_>,
+    ) -> ComputerUseResult<DispatchFence<'_>> {
+        frame.check_escape()?;
+        self.connection
+            .grab_server()
+            .map_err(native)?
+            .check()
+            .map_err(native)?;
+        let fence = DispatchFence(&self.connection);
+        if self
+            .connection
+            .get_input_focus()
+            .map_err(native)?
+            .reply()
+            .map_err(native)?
+            .focus
+            != self.window
+            || self.evidence()?.target.bounds != guard.observation.source_rect
+        {
+            return Err(refused(
+                ComputerUseErrorCode::TargetUnavailable,
+                "X11 foreground or bounds changed before dispatch",
+            ));
+        }
+        frame.require_exposed(self)?;
+        Ok(fence)
+    }
+
     fn pointer_destination(&self, root_x: i16, root_y: i16) -> ComputerUseResult<(u32, i16, i16)> {
         // Hit-test the stacked X11 window hierarchy at the requested screen
         // point before moving the physical cursor. An input-only overlay can
@@ -235,11 +277,11 @@ impl LinuxPixels {
             .iter()
             .map(|s| map.chord(s))
             .collect::<ComputerUseResult<Vec<_>>>()?;
-        let frame = ExecutionFrame::show(self, observation.source_rect, map.code(0xff1b)?)?;
         let mut attempted = false;
         let mut wait_ms = 0;
         let start = Instant::now();
         let dispatch = (|| {
+            let frame = ExecutionFrame::show(self, observation.source_rect, map.code(0xff1b)?)?;
             self.validate_input(&guard)?;
             let pointer = self
                 .connection
@@ -247,7 +289,20 @@ impl LinuxPixels {
                 .map_err(native)?
                 .reply()
                 .map_err(native)?;
-            if !pointer.same_screen || u16::from(pointer.mask) != 0 {
+            let key_state = self
+                .connection
+                .query_keymap()
+                .map_err(native)?
+                .reply()
+                .map_err(native)?;
+            let held_modifier = map
+                .modifiers
+                .iter()
+                .copied()
+                .filter(|&key| key != 0)
+                .any(|key| key_state.keys[usize::from(key / 8)] & (1 << (key % 8)) != 0);
+            // A latched core Lock modifier does not imply a physically held key.
+            if !pointer.same_screen || u16::from(pointer.mask) & !2 != 0 || held_modifier {
                 return Err(invalid(
                     "X11 input requires an unmodified pointer on the same display",
                 ));
@@ -286,8 +341,8 @@ impl LinuxPixels {
                         "X11 click currently supports the primary button without modifiers",
                     ));
                 }
+                let _fence = self.dispatch_fence(&frame, &guard)?;
                 let destination = self.pointer_destination(base.root_x, base.root_y)?;
-                frame.validate(self)?;
                 let admission = self.admit_input(&guard)?;
                 attempted = true;
                 self.connection
@@ -314,8 +369,6 @@ impl LinuxPixels {
                         "the X11 client under the pointer changed",
                     ));
                 }
-                self.validate_input(&guard)?;
-                frame.validate(self)?;
                 let _admission = self.admit_input(&guard)?;
                 let base = KeyPressEvent {
                     event: destination.0,
@@ -338,7 +391,7 @@ impl LinuxPixels {
                         wait_ms += before.elapsed().as_millis() as u64;
                     }
                     self.validate_input(&guard)?;
-                    frame.validate(self)?;
+                    let _fence = self.dispatch_fence(&frame, &guard)?;
                     if Keymap::read(self)? != map {
                         return Err(invalid(
                             "the X11 keyboard mapping changed during the sequence",

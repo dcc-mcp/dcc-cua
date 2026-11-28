@@ -83,7 +83,10 @@ taps or chords in `keys` with one fresh observation on the same connection.
 The [modeling](../../examples/blender-extrude-column.json) and
 [rig animation](../../examples/blender-rig-keyframes.json) actions use
 Blender 5.1.1 factory settings and its default English keymap. The model uses
-zero inter-step delay. The animation allows 40 ms between chords for pose updates.
+zero inter-step delay. The animation allows 12 ms between chords. Submit its
+first batch through the eight Right taps. Verify Pose mode at frame 9 with
+the first pose keyed, then reuse the post-action observation for the final
+three chords starting at Alt+R. Blender evaluates animation asynchronously.
 The modeling example selects the second result for “Add Mesh Plane”. Check the
 menu before using that sequence with another version, locale or search history.
 End the batch when the

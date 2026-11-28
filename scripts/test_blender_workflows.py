@@ -4,6 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -112,13 +113,35 @@ def checked_result(response, method, report):
                     continue
                 if isinstance(error, dict):
                     diagnostic.update(code=error.get("error_code", error.get("code")), reason=error.get("reason"))
+                    # Keep only content-free native facts in the public report.
+                    native = re.search(r"guarded physical input failed: ([A-Za-z]+)", str(error.get("message", "")))
+                    if native:
+                        diagnostic["reason"] = native.group(1)
+                    elif str(error.get("message", "")) in {
+                        "guarded native pixel input requires the connected task deadline",
+                        "the exact macOS window lacks AX focus",
+                        "the exact macOS foreground window must be unobscured",
+                        "no exposed macOS execution frame",
+                        "macOS foreground window or execution frame lost exposure",
+                        "macOS execution frame or Escape monitor unavailable",
+                        "macOS input requires Accessibility and Screen Recording permission",
+                    }:
+                        diagnostic["reason"] = error["message"]
+                    details = error.get("details") or {}
+                    for field in ("phase", "action_attempted", "input_sent", "completion"):
+                        if field in details:
+                            diagnostic[field] = details[field]
+                    fence = details.get("native_input_fence") or {}
+                    for field in ("unobscured", "point_visible", "hit_is_target_or_child", "redaction_count"):
+                        if field in fence:
+                            diagnostic[field] = fence[field]
                     break
         report["tool_failure"] = diagnostic
         raise RuntimeError(f"{method} failed: {diagnostic.get('code')} ({diagnostic.get('reason')})")
     return structured(response)
 
 
-def benchmark(binary, pid, window, directory, report):
+def benchmark(binary, pid, window, directory, report, terminal_snapshot):
     manifest = json.loads(subprocess.check_output([binary, "manifest"], text=True, creationflags=NO_CONSOLE))
     version = manifest["version"]
     print(f"provider=dcc-cua runtime={version} pid={pid} hwnd={window}", flush=True)
@@ -161,10 +184,12 @@ def benchmark(binary, pid, window, directory, report):
 
         if os.name == "nt":
             native_state = call("get_window_state", {})["state"]
+            report["initial_window"] = {k: native_state[k] for k in ("foreground", "bounds", "visible_bounds", "minimized") if k in native_state}
             if not native_state["foreground"]:
                 call("change_window_state", {"operation": "restore_activate"})
         snapshot = call("snapshot", {})
         observation = snapshot["observation"]
+        report["capture_size"] = [observation["width"], observation["height"]]
         if sys.platform == "darwin":
             report["accessibility_granted"] = observation["capture_provenance"]["accessibility_granted"]
         assert (observation["process_id"], observation["window_handle"]) == (pid, window)
@@ -180,23 +205,41 @@ def benchmark(binary, pid, window, directory, report):
             before = set(state["objects"])
             action = json.loads((ROOT / "examples" / example).read_text(encoding="utf-8"))
             begin = time.perf_counter()
-            result = call("execute_action", {"observation_id": observation_id, "action": action, "capture_after": True})
+            capture_after = case != CASES[-1][0] or terminal_snapshot
+            timings = []
+            if case == "rig":
+                boundary = action["keys"].index("ALT+R")
+                advance = dict(action, keys=action["keys"][:boundary])
+                arrived = call("execute_action", {"observation_id": observation_id, "action": advance, "capture_after": True})
+                timings.append(confirmed_sequence(arrived, advance))
+                wait_scene(directory, lambda s: s["mode"] == "POSE" and s["frame"] == 9
+                           and len(s.get("bones", [])) == 3 and bool(s.get("curves")))
+                observation_id = arrived["post_snapshot"]["observation_id"]
+                action = dict(action, keys=action["keys"][boundary:])
+            result = call("execute_action", {"observation_id": observation_id, "action": action, "capture_after": capture_after})
             # The execution frame lease has ended by the time the ordinary
             # banner status is sampled. The native receipt covers the actual
             # dispatch interval: each completed chord passed its frame guard.
-            delivery = result["result"]["delivery"]
-            timing = delivery["key_sequence_timing"]
-            if (result["status"] != "succeeded" or not delivery["post_dispatch_validated"]
-                    or timing["steps"] != len(action["keys"])):
-                raise RuntimeError(f"{case} did not complete the guarded sequence")
+            timings.append(confirmed_sequence(result, action))
             state = wait_scene(directory, lambda s: verified(case, s, before))
-            report["cases"].append({"case": case, "steps": len(action["keys"]), "verified": True,
-                                    "native_timing": timing,
+            report["cases"].append({"case": case, "steps": sum(t["steps"] for t in timings), "verified": True,
+                                    "capture_after": capture_after,
+                                    "batch_timings": timings,
                                     "verified_ms": round((time.perf_counter() - begin) * 1000),
                                     "scene": state})
-            observation_id = result["post_snapshot"]["observation_id"]
+            if capture_after:
+                observation_id = result["post_snapshot"]["observation_id"]
         report["metrics"] = structured(mcp.tool("dcc_cua_metrics", {}))
         mcp.stop(task)
+
+
+def confirmed_sequence(result, action):
+    delivery = result["result"]["delivery"]
+    timing = delivery["key_sequence_timing"]
+    if (result["status"] != "succeeded" or not delivery["post_dispatch_validated"]
+            or timing["steps"] != len(action["keys"])):
+        raise RuntimeError("Blender input did not complete the guarded sequence")
+    return timing
 
 
 def main():
@@ -204,6 +247,8 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--blender", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--terminal-snapshot", action="store_true",
+                        help="include the terminal screenshot when comparing image transport")
     args = parser.parse_args()
     start = time.perf_counter()
     report = {"platform": sys.platform, "calls": [], "cases": [], "success": False}
@@ -211,14 +256,16 @@ def main():
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
             env = dict(os.environ, DCC_CUA_BLENDER_BENCH=folder, BLENDER_USER_CONFIG=str(directory / "config"))
-            process = subprocess.Popen([str(args.blender.resolve()), "--factory-startup", "-p", "80", "180",
-                                        "960", "540", "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
+            # Leave space for the title bar, taskbar and exterior execution
+            # frame even on the hosted Windows and macOS virtual displays.
+            process = subprocess.Popen([str(args.blender.resolve()), "--factory-startup", "-p", "40", "64",
+                                        "700", "420", "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
                                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        creationflags=NO_CONSOLE)
             try:
                 window = unique_window(process, directory)
                 try:
-                    benchmark(args.binary.resolve(), process.pid, window, directory, report)
+                    benchmark(args.binary.resolve(), process.pid, window, directory, report, args.terminal_snapshot)
                 except Exception:
                     scene = directory / "scene.json"
                     if scene.is_file():
