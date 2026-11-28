@@ -7,19 +7,19 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Upstream synchronization status
 
-The latest published Try CUA Driver release is `cua-driver-rs-v0.64.1`.
+The latest published Try CUA Driver release is `cua-driver-rs-v0.64.4`.
 DCC CUA pins its immutable release commit
-`trycua/cua@3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95` across the runtime,
+`trycua/cua@cf3ce28f4a559b3d5a8427a3c8beda16c110566f` across the runtime,
 platform adapters, cursor renderer, testkit and generated workspace-hack
 manifest.
 
-The source update moves from Driver 0.60.0 to the official upstream 0.64.1
+The source update moves from Driver 0.64.1 to the official upstream 0.64.4
 release. The dependency contract, lockfile resolution, downstream compilation,
 formatting, linting and native acceptance remain required gates for delivery.
 
 ## Current source candidate
 
-The current source candidate is the official `trycua/cua` Driver 0.64.1
+The current source candidate is the official `trycua/cua` Driver 0.64.4
 release commit above. The prior Driver 0.60.0 validation record and the older
 `loonghao/cua` compatibility history remain below for migration traceability.
 

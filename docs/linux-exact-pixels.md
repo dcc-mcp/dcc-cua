@@ -18,7 +18,7 @@ advertised in the platform manifest; protocol method names are not capabilities.
 The one-shot CLI selects a dedicated native SDK runtime with desktop preparation
 and cursor rendering disabled, without installing a cursor theme. Its DCC-facing
 tool inventory is empty, so accidental semantic or input dispatch is refused.
-Try CUA Driver 0.64.1 registers the optional `parse_visual_regions` entry in
+Try CUA Driver 0.64.4 registers the optional `parse_visual_regions` entry in
 the underlying SDK registry. DCC filters that entry from pixels-only inventory,
 and the unavailable perception client refuses calls without a DCC capture
 binding.
