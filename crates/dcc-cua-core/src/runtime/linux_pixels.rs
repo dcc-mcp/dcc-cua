@@ -34,7 +34,7 @@ struct Evidence {
 }
 
 pub(super) struct LinuxPixels {
-    connection: Connection,
+    connection: Arc<Connection>,
     root: u32,
     window: u32,
     pid: u32,
@@ -154,7 +154,7 @@ impl LinuxPixels {
             .map_err(native)?;
         let process = process_identity(pid)?;
         let mut bound = Self {
-            connection,
+            connection: Arc::new(connection),
             root,
             window,
             pid,
@@ -351,14 +351,32 @@ impl LinuxPixels {
                 is_on_screen: true,
                 is_minimized: false,
                 z_index: None,
-                is_foreground: false,
+                is_foreground: self
+                    .connection
+                    .get_input_focus()
+                    .map_err(native)?
+                    .reply()
+                    .map_err(native)?
+                    .focus
+                    == self.window,
             },
             process,
             visual: attributes.visual,
         })
     }
 
-    fn require_unobscured(&self, mut child: u32, bounds: [i32; 4]) -> ComputerUseResult<()> {
+    fn require_unobscured(&self, child: u32, bounds: [i32; 4]) -> ComputerUseResult<()> {
+        match self.scan_stack(child, bounds) {
+            // A transient sibling may close between QueryTree and SelectInput.
+            // Re-read the full ancestry and stack before admitting the target.
+            Err(error) if error.code == ComputerUseErrorCode::StaleObservation => {
+                self.scan_stack(child, bounds)
+            }
+            result => result,
+        }
+    }
+
+    fn scan_stack(&self, mut child: u32, bounds: [i32; 4]) -> ComputerUseResult<()> {
         let mut remaining = MAX_WINDOWS;
         for _ in 0..32 {
             let tree = self
@@ -386,12 +404,27 @@ impl LinuxPixels {
                 .position(|id| *id == child)
                 .ok_or_else(|| native("target missing from X11 stack"))?;
             for &window in &siblings[index + 1..] {
+                let sibling_error = |error: x11rb::errors::ReplyError| match &error {
+                    x11rb::errors::ReplyError::X11Error(e)
+                        if matches!(
+                            e.error_kind,
+                            x11rb::protocol::ErrorKind::Window
+                                | x11rb::protocol::ErrorKind::Drawable
+                        ) && e.bad_value == window =>
+                    {
+                        refused(
+                            ComputerUseErrorCode::StaleObservation,
+                            "X11 sibling disappeared during stacking inventory",
+                        )
+                    }
+                    _ => native(error),
+                };
                 let attrs = self
                     .connection
                     .get_window_attributes(window)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 if attrs.map_state != MapState::VIEWABLE || attrs.class != WindowClass::INPUT_OUTPUT
                 {
                     continue;
@@ -404,13 +437,13 @@ impl LinuxPixels {
                     .shape_select_input(window, true)
                     .map_err(native)?
                     .check()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 let shape = self
                     .connection
                     .shape_query_extents(window)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 if shape.bounding_shaped
                     && (shape.bounding_shape_extents_width == 0
                         || shape.bounding_shape_extents_height == 0)
@@ -422,13 +455,13 @@ impl LinuxPixels {
                     .get_geometry(window)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 let position = self
                     .connection
                     .translate_coordinates(window, self.root, 0, 0)
                     .map_err(native)?
                     .reply()
-                    .map_err(native)?;
+                    .map_err(sibling_error)?;
                 let border = i32::from(geometry.border_width);
                 // The server's bounding-shape extents enclose every painted
                 // rectangle. Keep the border conservative on both paths.

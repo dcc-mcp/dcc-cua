@@ -118,9 +118,9 @@ struct InputGuard<'a> {
 
 // Fence only a single press/release group. Delays, Escape polling on its
 // own client, and application state readback run outside the server grab.
-struct DispatchFence<'a>(&'a Connection);
+struct DispatchFence(Arc<Connection>);
 
-impl Drop for DispatchFence<'_> {
+impl Drop for DispatchFence {
     fn drop(&mut self) {
         let _ = self.0.ungrab_server();
         let _ = self.0.flush();
@@ -129,32 +129,15 @@ impl Drop for DispatchFence<'_> {
 
 impl LinuxPixels {
     fn dispatch_fence(
-        &self,
+        &mut self,
         frame: &ExecutionFrame,
         guard: &InputGuard<'_>,
-    ) -> ComputerUseResult<DispatchFence<'_>> {
+    ) -> ComputerUseResult<DispatchFence> {
         frame.check_escape()?;
-        self.connection
-            .grab_server()
-            .map_err(native)?
-            .check()
-            .map_err(native)?;
-        let fence = DispatchFence(&self.connection);
-        if self
-            .connection
-            .get_input_focus()
-            .map_err(native)?
-            .reply()
-            .map_err(native)?
-            .focus
-            != self.window
-            || self.evidence()?.target.bounds != guard.observation.source_rect
-        {
-            return Err(refused(
-                ComputerUseErrorCode::TargetUnavailable,
-                "X11 foreground or bounds changed before dispatch",
-            ));
-        }
+        let cookie = self.connection.grab_server().map_err(native)?;
+        let fence = DispatchFence(Arc::clone(&self.connection));
+        cookie.check().map_err(native)?;
+        self.validate_input(guard)?;
         frame.require_exposed(self)?;
         Ok(fence)
     }
@@ -239,15 +222,7 @@ impl LinuxPixels {
                 .as_ref()
                 .map(|(_, a)| a.as_ref()),
         )?;
-        if self
-            .connection
-            .get_input_focus()
-            .map_err(native)?
-            .reply()
-            .map_err(native)?
-            .focus
-            != self.window
-        {
+        if !target.is_foreground {
             return Err(refused(
                 ComputerUseErrorCode::TargetUnavailable,
                 "the exact X11 window lacks keyboard focus",
@@ -390,7 +365,6 @@ impl LinuxPixels {
                         }
                         wait_ms += before.elapsed().as_millis() as u64;
                     }
-                    self.validate_input(&guard)?;
                     let _fence = self.dispatch_fence(&frame, &guard)?;
                     if Keymap::read(self)? != map {
                         return Err(invalid(

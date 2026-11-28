@@ -481,7 +481,7 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
     match variant {
         "closed_loop" => {
             action.steps = None;
-            action.path.push(action.path[0].clone());
+            action.path.push(action.path[0]);
         }
         "outside" => action.path[1].x = 400.0,
         "same_pixel" => action.path[1] = ComputerUsePoint { x: 10.9, y: 20.1 },

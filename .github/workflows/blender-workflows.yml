@@ -8,6 +8,7 @@ on:
       - 'examples/blender-*.json'
       - 'scripts/*blender*'
       - 'scripts/fixtures/blender_scene_readback.py'
+      - 'scripts/fixtures/blender_macos.swift'
       - '.github/workflows/blender-workflows.yml'
   workflow_dispatch:
 

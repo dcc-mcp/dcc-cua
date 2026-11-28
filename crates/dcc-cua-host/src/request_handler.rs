@@ -920,7 +920,9 @@ async fn handle_request_inner(
                     .await?;
             let state = if host.require_native_menu_dismiss_grant(&session_id).is_ok() {
                 host.session.native_window_state_for_menu_dismiss().await
-            } else if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+            } else if !cfg!(target_os = "linux")
+                && host.observation_mode == crate::TaskObservationMode::PixelsOnly
+            {
                 host.session.native_window_state_for_frame().await
             } else {
                 host.session.window_state().await

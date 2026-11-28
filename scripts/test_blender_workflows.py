@@ -21,19 +21,7 @@ NO_CONSOLE = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 def unique_window(process, directory):
     pid = process.pid
     if sys.platform == "darwin":
-        finder = directory / "find-window"
-        swift = directory / "find.swift"
-        swift.write_text("""
-import CoreGraphics
-import Foundation
-let pid = Int(CommandLine.arguments[1])!
-let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid && window[kCGWindowLayer as String] as? Int == 0 {
-    if let id = window[kCGWindowNumber as String] as? Int { print(id) }
-}
-""", encoding="utf-8")
-        subprocess.run(["swiftc", str(swift), "-o", str(finder)], check=True, timeout=120)
-        command = [str(finder), str(pid)]
+        command = [str(directory / "blender-launcher"), "find", ""]
     elif os.name == "nt":
         command = ["powershell", "-NoProfile", "-Command",
                    f"(Get-Process -Id {pid} -ErrorAction Stop).MainWindowHandle.ToInt64()"]
@@ -46,6 +34,13 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid &
         if not (directory / "ready").is_file():
             time.sleep(0.1)
             continue
+        if sys.platform == "darwin":
+            pid_file = directory / "pid"
+            if not pid_file.is_file():
+                time.sleep(0.1)
+                continue
+            pid = int(pid_file.read_text())
+            command[-1] = str(pid)
         lines = subprocess.check_output(command, text=True, timeout=5, creationflags=NO_CONSOLE).splitlines()
         if sys.platform.startswith("linux"):
             candidates = [int(parts[0], 16) for line in lines
@@ -53,7 +48,7 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid &
         else:
             candidates = [int(line) for line in lines if line.isdecimal() and int(line) > 0]
         if len(candidates) == 1:
-            return candidates[0]
+            return pid, candidates[0]
         time.sleep(0.1)
     if not (directory / "ready").exists():
         raise RuntimeError("the Blender scene fixture did not reach its first UI timer")
@@ -117,7 +112,9 @@ def checked_result(response, method, report):
                     native = re.search(r"guarded physical input failed: ([A-Za-z]+)", str(error.get("message", "")))
                     if native:
                         diagnostic["reason"] = native.group(1)
-                    elif str(error.get("message", "")) in {
+                    message = str(error.get("message", ""))
+                    reason = message.split(": ", 1)[-1]
+                    if not native and reason in {
                         "guarded native pixel input requires the connected task deadline",
                         "the exact macOS window lacks AX focus",
                         "the exact macOS foreground window must be unobscured",
@@ -125,8 +122,20 @@ def checked_result(response, method, report):
                         "macOS foreground window or execution frame lost exposure",
                         "macOS execution frame or Escape monitor unavailable",
                         "macOS input requires Accessibility and Screen Recording permission",
+                        "macOS application is not frontmost",
+                        "macOS window does not fit its display",
+                        "macOS WindowServer bounds changed",
+                        "macOS execution frame has no visible band",
+                        "macOS window is covered by another on-screen surface",
+                        "macOS WindowServer exposure could not be verified",
+                        "the exact X11 window lacks keyboard focus",
+                        "the exact X11 target is occluded; pixels were discarded",
+                        "X11 input geometry or instance changed",
+                        "X11 target is clipped or shaped by an ancestor",
+                        "the exact X11 target is outside its screen",
+                        "no exposed X11 execution frame band",
                     }:
-                        diagnostic["reason"] = error["message"]
+                        diagnostic["reason"] = reason
                     details = error.get("details") or {}
                     for field in ("phase", "action_attempted", "input_sent", "completion"):
                         if field in details:
@@ -150,10 +159,12 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
     actions = [{"action": name, "input_kind": "raw_input", "secret_input": False,
                 "authorization_category": "raw_input"} for name in ("click", "key_sequence") if capability]
     methods = ["snapshot"]
+    if os.name == "nt" or sys.platform.startswith("linux"):
+        methods.append("get_window_state")
     if capability:
         methods.append("execute_action")
     if os.name == "nt":
-        methods.extend(("get_window_state", "change_window_state"))
+        methods.append("change_window_state")
     start = time.perf_counter()
     with client(binary, os.environ.copy(), None) as mcp:
         report["initialize_ms"] = round((time.perf_counter() - start) * 1000)
@@ -180,18 +191,32 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
             receipt = checked_result(result, method, report)
             if receipt.get("success") is False:
                 raise RuntimeError(f"{method} failed: {receipt.get('reason', 'unknown')}")
+            captured = receipt.get("observation") or (receipt.get("post_snapshot") or {}).get("observation", {})
+            visibility = captured.get("capture_provenance", {}).get("visibility", {})
+            if "redacted_rectangles" in visibility:
+                metrics["redacted_rectangles"] = visibility["redacted_rectangles"][:16]
             return receipt
 
-        if os.name == "nt":
+        if os.name == "nt" or sys.platform.startswith("linux"):
             native_state = call("get_window_state", {})["state"]
             report["initial_window"] = {k: native_state[k] for k in ("foreground", "bounds", "visible_bounds", "minimized") if k in native_state}
             if not native_state["foreground"]:
-                call("change_window_state", {"operation": "restore_activate"})
+                if os.name == "nt":
+                    call("change_window_state", {"operation": "restore_activate"})
+                else:
+                    deadline = time.monotonic() + 5
+                    while not native_state["foreground"] and time.monotonic() < deadline:
+                        time.sleep(0.15)
+                        native_state = call("get_window_state", {})["state"]
+                    if not native_state["foreground"]:
+                        raise RuntimeError("Blender did not receive X11 keyboard focus")
         snapshot = call("snapshot", {})
         observation = snapshot["observation"]
         report["capture_size"] = [observation["width"], observation["height"]]
         if sys.platform == "darwin":
-            report["accessibility_granted"] = observation["capture_provenance"]["accessibility_granted"]
+            provenance = observation["capture_provenance"]
+            for field in ("accessibility_granted", "exact_ax_focus", "input_exposure", "native_window_bounds"):
+                report[field] = provenance.get(field)
         assert (observation["process_id"], observation["window_handle"]) == (pid, window)
         if not capability:
             raise RuntimeError("guarded_key_sequence_v1 is absent from the native runtime manifest")
@@ -249,6 +274,8 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--terminal-snapshot", action="store_true",
                         help="include the terminal screenshot when comparing image transport")
+    parser.add_argument("--window-geometry", type=int, nargs=4, metavar=("X", "Y", "WIDTH", "HEIGHT"),
+                        default=(40, 64, 700, 420), help="placement of the disposable Blender window")
     args = parser.parse_args()
     start = time.perf_counter()
     report = {"platform": sys.platform, "calls": [], "cases": [], "success": False}
@@ -258,14 +285,21 @@ def main():
             env = dict(os.environ, DCC_CUA_BLENDER_BENCH=folder, BLENDER_USER_CONFIG=str(directory / "config"))
             # Leave space for the title bar, taskbar and exterior execution
             # frame even on the hosted Windows and macOS virtual displays.
-            process = subprocess.Popen([str(args.blender.resolve()), "--factory-startup", "-p", "40", "64",
-                                        "700", "420", "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
-                                       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            launch = [str(args.blender.resolve())]
+            if sys.platform == "darwin":
+                helper = directory / "blender-launcher"
+                subprocess.run(["swiftc", str(ROOT / "scripts/fixtures/blender_macos.swift"), "-o", str(helper)],
+                               check=True, timeout=120)
+                launch = [str(helper), "launch", folder, str(args.blender.resolve().parents[2])]
+            process = subprocess.Popen([*launch, "--factory-startup", "-p", *map(str, args.window_geometry),
+                                        "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
+                                       env=env, stdin=subprocess.PIPE if sys.platform == "darwin" else subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        creationflags=NO_CONSOLE)
             try:
-                window = unique_window(process, directory)
+                pid, window = unique_window(process, directory)
                 try:
-                    benchmark(args.binary.resolve(), process.pid, window, directory, report, args.terminal_snapshot)
+                    benchmark(args.binary.resolve(), pid, window, directory, report, args.terminal_snapshot)
                 except Exception:
                     scene = directory / "scene.json"
                     if scene.is_file():
@@ -273,14 +307,23 @@ def main():
                     raise
                 report["success"] = True
             finally:
-                process.terminate()
+                if sys.platform == "darwin":
+                    process.stdin.close()
+                else:
+                    process.terminate()
                 try:
                     process.wait(timeout=8)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+                if sys.platform == "darwin" and process.returncode:
+                    report["success"] = False
+                    raise RuntimeError("LaunchServices fixture cleanup did not confirm exit")
     except Exception as error:
         report["failure"] = str(error)
+        if error.__context__ and str(error) == "MCP task or process cleanup failed":
+            report["failure"] = str(error.__context__)
+            report["cleanup_failure"] = str(error)
         raise
     finally:
         report["workflow_wall_ms"] = round((time.perf_counter() - start) * 1000)

@@ -172,7 +172,7 @@ impl MacPixels {
             ));
         }
         self.generation += 1;
-        let provenance = json!({"backend":CAPTURE_BACKEND,"scope":"window","observation_mode":"pixels_only",
+        let mut provenance = json!({"backend":CAPTURE_BACKEND,"scope":"window","observation_mode":"pixels_only",
             "pixels_captured":true,"read_only":self.input_lease.is_none(),
             "input_available":self.input_lease.is_some(),"activation_available":false,
             "accessibility_available":false,
@@ -181,6 +181,22 @@ impl MacPixels {
             "process_id":after.pid,"window_handle":after.window_id,"native_window_bounds":after.bounds,
             "native_bounds_units":"display_points","coordinate_units":"image_pixels",
             "process_start":self.process_start,"capture_generation":self.generation});
+        if self.input_lease.is_some() {
+            provenance["input_exposure"] = json!(
+                dcc_cua_indicator::macos_frame::require_exposure(
+                    self.pid,
+                    self.window,
+                    &after.bounds,
+                    0
+                )
+                .err()
+                .unwrap_or("exposed")
+            );
+            provenance["exact_ax_focus"] = json!(
+                platform_macos::ax::bindings::focused_window_id_of_pid(self.pid)
+                    .is_some_and(|id| id.own == self.window && id.root == self.window)
+            );
+        }
         Ok((data, after, provenance))
     }
 }

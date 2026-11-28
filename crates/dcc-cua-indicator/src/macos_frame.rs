@@ -15,16 +15,29 @@ unsafe extern "C" {
     fn dcc_run_frame(rect: *const i32, width: i32, red: i32, green: i32, blue: i32) -> i32;
 }
 
-pub fn exposed(owner: i32, window: u32, rect: &[i32; 4], renderer: i32) -> bool {
+pub fn require_exposure(
+    owner: i32,
+    window: u32,
+    rect: &[i32; 4],
+    renderer: i32,
+) -> Result<(), &'static str> {
     // WindowServer only reads the fixed array during this call.
-    unsafe {
+    match unsafe {
         dcc_frame_exposed(
             owner,
             window,
             rect.as_ptr(),
             renderer,
             TARGET_FRAME_THICKNESS_DIP,
-        ) != 0
+        )
+    } {
+        1 => Ok(()),
+        -1 => Err("macOS application is not frontmost"),
+        -2 => Err("macOS window does not fit its display"),
+        -3 => Err("macOS WindowServer bounds changed"),
+        -4 => Err("macOS execution frame has no visible band"),
+        -5 => Err("macOS window is covered by another on-screen surface"),
+        _ => Err("macOS WindowServer exposure could not be verified"),
     }
 }
 
@@ -71,11 +84,10 @@ impl ExecutionFrame {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             frame.check_interrupt()?;
-            if exposed(owner, window, rect, frame.child.id() as i32) {
-                return Ok(frame);
-            }
-            if Instant::now() >= deadline {
-                return Err(io::Error::other("no exposed macOS execution frame"));
+            match require_exposure(owner, window, rect, frame.child.id() as i32) {
+                Ok(()) => return Ok(frame),
+                Err(reason) if Instant::now() >= deadline => return Err(io::Error::other(reason)),
+                Err(_) => {}
             }
             std::thread::sleep(Duration::from_millis(8));
         }
@@ -96,13 +108,7 @@ impl ExecutionFrame {
 
     pub fn validate(&mut self, pid: i32, window: u32, rect: &[i32; 4]) -> io::Result<()> {
         self.check_interrupt()?;
-        if exposed(pid, window, rect, self.child.id() as i32) {
-            Ok(())
-        } else {
-            Err(io::Error::other(
-                "macOS foreground window or execution frame lost exposure",
-            ))
-        }
+        require_exposure(pid, window, rect, self.child.id() as i32).map_err(io::Error::other)
     }
 }
 

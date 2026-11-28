@@ -41,8 +41,11 @@ case "$RUNNER_OS" in
     tar -xJf "$scratch/$file" -C "$scratch"
     export XDG_SESSION_TYPE=x11
     unset WAYLAND_DISPLAY
-    xvfb-run -a --server-args="-screen 0 1600x1100x24 -nolisten tcp" dbus-run-session -- \
-      bash -ec 'openbox >/dev/null 2>&1 & exec "$@"' -- "${command[@]}" --blender "$scratch/${file%.tar.xz}/blender"
+    xvfb-run -a --server-args="-screen 0 1600x1100x24 -nolisten tcp -noreset" dbus-run-session -- \
+      bash -ec 'openbox >/dev/null 2>&1 &
+        for _ in {1..100}; do wmctrl -m >/dev/null 2>&1 && break; sleep 0.05; done
+        wmctrl -m >/dev/null
+        exec "$@"' -- "${command[@]}" --blender "$scratch/${file%.tar.xz}/blender"
     ;;
   macOS)
     hdiutil attach -readonly -nobrowse -mountpoint "$scratch/mount" "$scratch/$file"

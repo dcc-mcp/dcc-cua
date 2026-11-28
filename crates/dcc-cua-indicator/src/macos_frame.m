@@ -25,9 +25,9 @@ static BOOL fitsDisplay(CGRect rect) {
 // transient dialogs and other applications. Only rectangular uncovered bands count.
 int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int renderer, int width) {
     @autoreleasepool {
-        if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != owner) return 0;
+        if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != owner) return -1;
         CGRect target = CGRectMake(rect[0], rect[1], rect[2], rect[3]);
-        if (!fitsDisplay(target)) return 0;
+        if (!fitsDisplay(target)) return -2;
         NSArray *stack = CFBridgingRelease(CGWindowListCopyWindowInfo(
             kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
         BOOL covered[4] = {NO, NO, NO, NO};
@@ -38,9 +38,11 @@ int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int rende
             if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)entry[(__bridge id)kCGWindowBounds], &bounds))
                 return 0;
             int pid = [entry[(__bridge id)kCGWindowOwnerPID] intValue];
-            if (pid == owner && [entry[(__bridge id)kCGWindowNumber] unsignedIntValue] == window)
-                return CGRectEqualToRect(bounds, target) && (renderer == 0 || visibleBand);
-            if (CGRectIntersectsRect(bounds, target)) return 0;
+            if (pid == owner && [entry[(__bridge id)kCGWindowNumber] unsignedIntValue] == window) {
+                if (!CGRectEqualToRect(bounds, target)) return -3;
+                return renderer == 0 || visibleBand ? 1 : -4;
+            }
+            if (CGRectIntersectsRect(bounds, target)) return -5;
             for (NSUInteger edge=0; edge<4; ++edge) {
                 CGRect band = exterior(target, edge, width);
                 if (renderer > 0 && pid == renderer && !covered[edge] &&

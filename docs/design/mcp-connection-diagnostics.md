@@ -159,6 +159,23 @@ model usage can be sent with the one-way
 `dcc_cua_record_model_usage` tool. The report stores aggregates only and does
 not retain prompts, responses, task arguments, coordinates, paths, or pixels.
 
+Forward each completed model call's provider usage once on the same MCP
+connection. Supply `cached_input_tokens` and `model_elapsed_ms` only when the
+Host measured them. Keep task wall time on its own outcome notification.
+Send each JSON-RPC notification on its own line.
+
+```jsonl
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/model_usage","params":{"input_tokens":1200,"cached_input_tokens":800,"output_tokens":72,"model_elapsed_ms":640}}
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/task_outcome","params":{"success":true,"elapsed_ms":2480}}
+```
+
+Read `dcc_cua_metrics` after the notifications. Compare
+`transport.output_image_base64_bytes_total` with `transport.output_other_bytes_total`
+to locate image traffic. Check `observations.post_snapshot_reuses_total` against
+`observations.post_action_snapshots_total`. The `model_tokens.available` field
+indicates whether the Host reported usage. Cache and latency counters include
+only calls that supplied those measurements.
+
 Reports scan at most 1,024 directory entries, accept at most 64 KiB per record,
 return at most 256 records, and tolerate unreadable or malformed records. A
 writer retains the newest 128 terminal records observed in each bounded scan;

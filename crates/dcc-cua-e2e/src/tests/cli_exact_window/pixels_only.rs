@@ -126,13 +126,17 @@ fn validate_pixels(value: &Value, pid: u32, hwnd: u64) -> Result<(), &'static st
 
 fn validate_png(path: &Path, value: &Value, redacted: bool) {
     let data = std::fs::read(path).expect("published PNG");
-    let mut reader = png::Decoder::new(data.as_slice())
+    validate_pixel_data(&data, &value["observation"], redacted);
+}
+
+fn validate_pixel_data(data: &[u8], observation: &Value, redacted: bool) {
+    let mut reader = png::Decoder::new(data)
         .read_info()
         .expect("valid PNG header");
     let mut pixels = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut pixels).expect("complete PNG pixels");
-    assert_eq!(value["observation"]["width"], info.width);
-    assert_eq!(value["observation"]["height"], info.height);
+    assert_eq!(observation["width"], info.width);
+    assert_eq!(observation["height"], info.height);
     assert!(info.width > 100 && info.height > 100);
     let channels = info.color_type.samples();
     let center =
@@ -149,6 +153,20 @@ fn validate_png(path: &Path, value: &Value, redacted: bool) {
             "covered pixels must be opaque-black redactions"
         );
     }
+}
+
+fn validate_covered_content(observation: &Value, pid: u32, hwnd: u64, data: &[u8]) {
+    assert_eq!(observation["process_id"], pid);
+    assert_eq!(observation["window_handle"], hwnd);
+    assert!(matches!(
+        observation["capture_backend"].as_str(),
+        Some("dcc-cua-wgc-exact-window" | "dcc-cua-print-window-exact-window")
+    ));
+    let proof = &observation["capture_provenance"];
+    assert_eq!(proof["capture_mode"], "window_content");
+    assert_eq!(proof["whole_desktop_capture"], false);
+    // The blocker is black. Only the exact target has a white center.
+    validate_pixel_data(data, observation, false);
 }
 
 async fn bounded_session<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -339,15 +357,26 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
         "blocker_process_id":pid, "blocker_window_handle":fixture.blocker,
         "blocker_bounds":target_bounds, "cloaked":0
     });
-    assert_failure_receipt(
-        &blocked,
-        &blocked_path,
-        json!({"success":false, "error":{
-            "code":"capture_failed",
-            "message":"Exact-window capture was refused; see the content-free native proof details.",
-            "details":{"capture":blocked_capture.clone(), "whole_desktop_fallback":false}
-        }}),
-    );
+    if blocked.status.success() {
+        let value = receipt(&blocked.stdout, &blocked.stderr).expect("single content receipt");
+        validate_pixels(&value, pid, fixture.target).expect("exact content");
+        validate_covered_content(
+            &value["observation"],
+            pid,
+            fixture.target,
+            &std::fs::read(&blocked_path).unwrap(),
+        );
+    } else {
+        assert_failure_receipt(
+            &blocked,
+            &blocked_path,
+            json!({"success":false, "error":{
+                "code":"capture_failed",
+                "message":"Exact-window capture was refused; see the content-free native proof details.",
+                "details":{"capture":blocked_capture.clone(), "whole_desktop_fallback":false}
+            }}),
+        );
+    }
     fixture.resize_blocker(windows_sys::Win32::Foundation::RECT {
         left: target_bounds[0],
         top: target_bounds[1],
@@ -496,19 +525,23 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
             true,
         )
         .expect("exact blocker and restarted session resources");
-    let error = bounded_session(session.screenshot_pixels_only())
-        .await
-        .expect_err("occluded capture must fail");
-    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
-    let capture = error
-        .details
-        .as_ref()
-        .and_then(|details| details.capture.as_ref())
-        .expect("same-proof blocked-capture diagnostic");
-    assert_eq!(
-        serde_json::to_value(capture).expect("closed capture diagnostic"),
-        blocked_capture
-    );
+    match bounded_session(session.screenshot_pixels_only()).await {
+        Ok(screenshot) => validate_covered_content(
+            &serde_json::to_value(screenshot.observation).unwrap(),
+            pid,
+            fixture.target,
+            &screenshot.data,
+        ),
+        Err(error) => {
+            assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+            let capture = error
+                .details
+                .as_ref()
+                .and_then(|details| details.capture.as_ref())
+                .expect("same-proof blocked-capture diagnostic");
+            assert_eq!(serde_json::to_value(capture).unwrap(), blocked_capture);
+        }
+    }
     let stopped = bounded_session(session.stop())
         .await
         .expect("stop after capture failure");

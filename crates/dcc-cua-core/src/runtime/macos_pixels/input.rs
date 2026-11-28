@@ -1,5 +1,5 @@
 use super::*;
-use dcc_cua_indicator::macos_frame::{ExecutionFrame, exposed};
+use dcc_cua_indicator::macos_frame::{ExecutionFrame, require_exposure};
 use platform_macos::input::{keyboard, mouse};
 use std::sync::atomic::AtomicBool;
 
@@ -118,11 +118,7 @@ impl MacPixels {
         drop(admit()?);
         self.require_input_target(&observation)?;
         let rect = observation.source_rect;
-        if !exposed(self.pid, self.window, &rect, 0) {
-            return Err(unavailable(
-                "the exact macOS foreground window must be unobscured",
-            ));
-        }
+        require_exposure(self.pid, self.window, &rect, 0).map_err(unavailable)?;
         let normalized = action
             .keys
             .iter()
