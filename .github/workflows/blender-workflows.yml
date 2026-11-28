@@ -7,6 +7,8 @@ on:
       - 'Cargo.lock'
       - 'examples/blender-*.json'
       - 'scripts/*blender*'
+      - 'scripts/test_pointer_workflows.py'
+      - 'skills/cua-cli/scripts/action_sequence.py'
       - 'scripts/fixtures/blender_scene_readback.py'
       - 'scripts/fixtures/blender_macos.swift'
       - '.github/workflows/blender-workflows.yml'
@@ -54,6 +56,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: blender-workflows-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/blender-workflows.json
+          path: |
+            ${{ runner.temp }}/blender-workflows.json
+            ${{ runner.temp }}/blender-pointer.json
           if-no-files-found: warn
           retention-days: 5

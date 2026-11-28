@@ -35,17 +35,20 @@ if [[ "$downloaded" != true ]]; then
   echo "No verified Blender $version archive available for $RUNNER_OS" >&2
   exit 1
 fi
-command=(python -B scripts/test_blender_workflows.py --binary target/release/dcc-cua --report "$RUNNER_TEMP/blender-workflows.json")
+runner=()
+geometry=()
+binary=target/release/dcc-cua
 case "$RUNNER_OS" in
   Linux)
     tar -xJf "$scratch/$file" -C "$scratch"
     export XDG_SESSION_TYPE=x11
     unset WAYLAND_DISPLAY
-    xvfb-run -a --server-args="-screen 0 1600x1100x24 -nolisten tcp -noreset" dbus-run-session -- \
+    runner=(xvfb-run -a --server-args="-screen 0 1600x1100x24 -nolisten tcp -noreset" dbus-run-session -- \
       bash -ec 'openbox >/dev/null 2>&1 &
         for _ in {1..100}; do wmctrl -m >/dev/null 2>&1 && break; sleep 0.05; done
         wmctrl -m >/dev/null
-        exec "$@"' -- "${command[@]}" --blender "$scratch/${file%.tar.xz}/blender"
+        exec "$@"' --)
+    blender="$scratch/${file%.tar.xz}/blender"
     ;;
   macOS)
     hdiutil attach -readonly -nobrowse -mountpoint "$scratch/mount" "$scratch/$file"
@@ -53,7 +56,8 @@ case "$RUNNER_OS" in
     ditto "$scratch/mount/Blender.app" "$scratch/Blender.app"
     hdiutil detach "$scratch/mount"
     trap - EXIT
-    "${command[@]}" --blender "$scratch/Blender.app/Contents/MacOS/Blender" --window-geometry 80 160 700 420
+    blender="$scratch/Blender.app/Contents/MacOS/Blender"
+    geometry=(--window-geometry 80 160 700 420)
     ;;
   Windows)
     unzip -q "$scratch/$file" -d "$scratch"
@@ -61,7 +65,10 @@ case "$RUNNER_OS" in
     cp "$mesa/opengl32.dll" "$scratch/${file%.zip}/"
     export PATH="$mesa:$PATH"
     export GALLIUM_DRIVER=llvmpipe
-    python -B scripts/test_blender_workflows.py --binary target/release/dcc-cua.exe \
-      --report "$RUNNER_TEMP/blender-workflows.json" --blender "$scratch/${file%.zip}/blender.exe"
+    binary=target/release/dcc-cua.exe
+    blender="$scratch/${file%.zip}/blender.exe"
     ;;
 esac
+command=(python -B scripts/test_blender_workflows.py --binary "$binary" --blender "$blender" "${geometry[@]}")
+"${runner[@]}" "${command[@]}" --report "$RUNNER_TEMP/blender-workflows.json"
+"${runner[@]}" "${command[@]}" --pointer-sequence --report "$RUNNER_TEMP/blender-pointer.json"

@@ -1056,7 +1056,7 @@ async fn open_task_session(
         ),
     )
     .await
-    .map_err(|_| startup_timeout("provider transport readiness"))??;
+    .map_err(|_| startup_timeout("provider transport readiness", TASK_STARTUP_TIMEOUT_MS))??;
     // Retain the owner before hello/open-session can fail or be cancelled.
     // Closing the client transport requests cleanup; never abort admitted native work.
     proposal.session_open_attempted = true;
@@ -1072,10 +1072,16 @@ async fn open_task_session(
         client.hello(agent_name),
     )
     .await
-    .map_err(|_| startup_timeout("Host hello"))?
+    .map_err(|_| startup_timeout("Host hello", TASK_STARTUP_TIMEOUT_MS))?
     .map_err(|error| format!("DCC-CUA task startup failed during Host hello: {error}"))?;
+    // Opening an owned browser includes launching Chromium and binding its
+    // native window. Keep hello and existing-window opens on the short budget.
+    let open_timeout_ms = match proposal.registration.target {
+        TrustedTaskAuthorizationTarget::OwnedBrowser(_) => 45_000,
+        TrustedTaskAuthorizationTarget::ExactWindow { .. } => TASK_STARTUP_TIMEOUT_MS,
+    };
     let session = tokio::time::timeout(
-        Duration::from_millis(TASK_STARTUP_TIMEOUT_MS),
+        Duration::from_millis(open_timeout_ms),
         client.open_logical_task_session(
             task_session_id(proposal_id),
             grant,
@@ -1083,7 +1089,7 @@ async fn open_task_session(
         ),
     )
     .await
-    .map_err(|_| startup_timeout("Host open_session"))?;
+    .map_err(|_| startup_timeout("Host open_session", open_timeout_ms))?;
     session.map_err(|error| {
         if let HostClientError::Remote { response, .. } = &error {
             proposal.cleanup = startup_cleanup_receipt(response);
@@ -1092,9 +1098,9 @@ async fn open_task_session(
     })
 }
 
-fn startup_timeout(phase: &str) -> String {
+fn startup_timeout(phase: &str, timeout_ms: u64) -> String {
     format!(
-        "DCC-CUA task startup timed out during {phase} after {TASK_STARTUP_TIMEOUT_MS} ms; the task lease remains bounded and requires a fresh MCP start"
+        "DCC-CUA task startup timed out during {phase} after {timeout_ms} ms; the task lease remains bounded and requires a fresh MCP start"
     )
 }
 

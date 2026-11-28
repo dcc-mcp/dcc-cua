@@ -416,6 +416,19 @@ delivery reports `key_sequence_timing` with the chord count, dispatch time and
 time spent waiting between chords. Dispatch time includes native checks and
 input insertion. Measure screenshot round trips and application completion
 separately.
+For mixed mouse actions, use the [script runner](../skills/cua-cli/scripts/action_sequence.py)
+on the same task connection. The [browser example](../examples/browser-pointer-sequence.json)
+hovers, clicks and drags between named controls. Supply
+`browser_pointer_sequence(call, target_id, tab_id, steps, journal, verify)`.
+Here `call(method, request)` sends `dcc_cua_task_call` with
+`params={"request": request}`, checks the tool and browser status, and returns
+the inner browser structured receipt. For native windows, pass
+`window_sequence(call, (pid, hwnd), initial_snapshot, steps, journal, verify)`
+with an adapter returning the checked Host receipt. The optional verification
+callback receives the step and receipt and can return application evidence.
+Save the input plan alongside the journal. Its timings include observation
+and delivery, with total elapsed time through readback recorded separately.
+
 End a macro at any point where the next decision depends on a dialog,
 selection or other unknown state. An interrupted macro can leave a completed
 prefix. Inspect that state before issuing further input.

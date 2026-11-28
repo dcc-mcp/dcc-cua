@@ -67,6 +67,16 @@ For a visual-only task, select `observation_mode: "pixels_only"` at startup
 to avoid unnecessary accessibility traversal. Keep capture diagnostics off
 except while measuring; their hashes and histograms add work.
 
+Prefer a short script for complex work once the next actions and their targets
+are known. Keep the existing task connection. Use a single guarded key
+sequence for adjacent chords and a bounded [action sequence](scripts/action_sequence.py)
+for mixed moves, clicks, drags or key batches. Save the declared steps and
+their execution journal together. Record coordinates relative to the observed
+window, including path points and duration for a drag. Browser pointer steps
+use unique control labels and resolve fresh references on the same tab.
+Stop at a decision boundary. A delivered step becomes verified only after
+application readback. An unconfirmed step can have partial effects.
+
 For `dcc_cua_task_call` / `execute_action`, pass `observation_id` and an
 `action` containing `action`, `input_kind` and `intent`. Semantic input also
 needs the current `accessibility_state_id` and element reference. Request the

@@ -18,14 +18,37 @@ CASES = [("model", "blender-extrude-column.json"), ("rig", "blender-rig-keyframe
 NO_CONSOLE = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def windows_main_handles(pid):
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
+    handles = []
+
+    @callback_type
+    def visit(hwnd, _):
+        process = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process))
+        if process.value == pid and user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, 4):  # GW_OWNER
+            handles.append(hwnd)
+        return True
+
+    if not user32.EnumWindows(visit, 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handles
+
+
 def unique_window(process, directory):
     pid = process.pid
     if sys.platform == "darwin":
         command = [str(directory / "blender-launcher"), "find", ""]
-    elif os.name == "nt":
-        command = ["powershell", "-NoProfile", "-Command",
-                   f"(Get-Process -Id {pid} -ErrorAction Stop).MainWindowHandle.ToInt64()"]
-    else:
+    elif sys.platform.startswith("linux"):
         command = ["wmctrl", "-lp"]
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -41,12 +64,15 @@ def unique_window(process, directory):
                 continue
             pid = int(pid_file.read_text())
             command[-1] = str(pid)
-        lines = subprocess.check_output(command, text=True, timeout=5, creationflags=NO_CONSOLE).splitlines()
-        if sys.platform.startswith("linux"):
-            candidates = [int(parts[0], 16) for line in lines
-                          if len(parts := line.split()) >= 3 and parts[2] == str(pid)]
+        if os.name == "nt":
+            candidates = windows_main_handles(pid)
         else:
-            candidates = [int(line) for line in lines if line.isdecimal() and int(line) > 0]
+            lines = subprocess.check_output(command, text=True, timeout=5, creationflags=NO_CONSOLE).splitlines()
+            if sys.platform.startswith("linux"):
+                candidates = [int(parts[0], 16) for line in lines
+                              if len(parts := line.split()) >= 3 and parts[2] == str(pid)]
+            else:
+                candidates = [int(line) for line in lines if line.isdecimal() and int(line) > 0]
         if len(candidates) == 1:
             return pid, candidates[0]
         time.sleep(0.1)
@@ -305,6 +331,7 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--blender", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--pointer-sequence", action="store_true", help="verify move, click and held drag events")
     parser.add_argument("--terminal-snapshot", action="store_true",
                         help="include the terminal screenshot when comparing image transport")
     parser.add_argument("--window-geometry", type=int, nargs=4, metavar=("X", "Y", "WIDTH", "HEIGHT"),
@@ -315,6 +342,8 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
+            if args.pointer_sequence:
+                (directory / "pointer-benchmark").touch()
             env = dict(os.environ, DCC_CUA_BLENDER_BENCH=folder, BLENDER_USER_CONFIG=str(directory / "config"))
             # Leave space for the title bar, taskbar and exterior execution
             # frame even on the hosted Windows and macOS virtual displays.
@@ -332,7 +361,11 @@ def main():
             try:
                 pid, window = unique_window(process, directory)
                 try:
-                    benchmark(args.binary.resolve(), pid, window, directory, report, args.terminal_snapshot)
+                    if args.pointer_sequence:
+                        from test_pointer_workflows import benchmark_pointer
+                        benchmark_pointer(args.binary.resolve(), pid, window, directory, report)
+                    else:
+                        benchmark(args.binary.resolve(), pid, window, directory, report, args.terminal_snapshot)
                 except Exception:
                     scene = directory / "scene.json"
                     if scene.is_file():

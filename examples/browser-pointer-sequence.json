@@ -1,0 +1,5 @@
+[
+  {"action": "move", "target": "Hover target"},
+  {"action": "click", "target": "Click target"},
+  {"action": "drag", "target": "Drag source", "destination": "Drag destination"}
+]
