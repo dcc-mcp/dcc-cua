@@ -351,8 +351,15 @@ fn concurrent_initialized_bridges_have_private_resources_and_remain_valid_while_
     first.send(json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"}));
     let resource_list = first.response();
     let resources = resource_list["result"]["resources"].as_array().unwrap();
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0]["uri"], CURRENT_CONNECTION_URI);
+    let mut uris: Vec<_> = resources
+        .iter()
+        .map(|resource| resource["uri"].as_str().unwrap())
+        .collect();
+    uris.sort_unstable();
+    assert_eq!(
+        uris,
+        [CURRENT_CONNECTION_URI, "dcc-cua://connection/metrics"]
+    );
     first.send(json!({
         "jsonrpc": "2.0", "id": 5, "method": "resources/read",
         "params": {"uri": "dcc-cua://connection/all"}

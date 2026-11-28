@@ -245,7 +245,8 @@ pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
                 || cursor_controls_available)
                 && (*capability != "windows_background_uia_fallback" || cfg!(windows))
                 && (*capability != "exact_window_restore_activate" || cfg!(windows))
-                && (*capability != "guarded_key_sequence_v1" || cfg!(windows))
+                && (*capability != "guarded_key_sequence_v1"
+                    || cfg!(any(windows, target_os = "linux")))
                 && (*capability != "exact_window_capture_preparation_v1" || cfg!(windows))
                 && (!capability.starts_with("input_backend:windows.") || cfg!(windows))
         })

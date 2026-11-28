@@ -12,6 +12,8 @@ use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask, ImageFormat, ImageOrder,
     MapState, VisualClass, WindowClass,
 };
+mod execution_frame;
+mod input;
 mod transport;
 use transport::Connection;
 
@@ -45,6 +47,7 @@ pub(super) struct LinuxPixels {
     generation: u64,
     usable: bool,
     native_task_authorization: Option<(String, Arc<crate::NativeTaskAuthorization>)>,
+    pub(super) input_lease: Option<Arc<crate::RecordingAuthorization>>,
 }
 
 use super::unix_pixels::Handle;
@@ -164,6 +167,7 @@ impl LinuxPixels {
             generation: 0,
             usable: true,
             native_task_authorization,
+            input_lease: None,
         };
         let evidence = bound.evidence()?;
         bound.drain_events(false)?;
@@ -313,7 +317,7 @@ impl LinuxPixels {
                 "the exact X11 target is outside its screen",
             ));
         }
-        self.require_unobscured(bounds)?;
+        self.require_unobscured(self.window, bounds)?;
         let title = self
             .connection
             .get_property(false, self.window, self.title_atom, self.utf8_atom, 0, 4096)
@@ -354,8 +358,7 @@ impl LinuxPixels {
         })
     }
 
-    fn require_unobscured(&self, bounds: [i32; 4]) -> ComputerUseResult<()> {
-        let mut child = self.window;
+    fn require_unobscured(&self, mut child: u32, bounds: [i32; 4]) -> ComputerUseResult<()> {
         let mut remaining = MAX_WINDOWS;
         for _ in 0..32 {
             let tree = self
@@ -636,7 +639,7 @@ impl LinuxPixels {
         }
         self.generation += 1;
         let provenance = json!({"backend":"x11-get-image-exact", "scope":"window", "observation_mode":"pixels_only",
-            "pixels_captured":true, "read_only":true, "input_available":false, "activation_available":false,
+            "pixels_captured":true, "read_only":self.input_lease.is_none(), "input_available":self.input_lease.is_some(), "activation_available":false,
             "accessibility_available":false, "degraded":false, "whole_desktop_capture":false,
             "fallback":null, "process_id":self.pid, "window_handle":self.window,
             "native_window_bounds":after.target.bounds, "capture_generation":self.generation,

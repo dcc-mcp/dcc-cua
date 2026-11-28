@@ -51,6 +51,10 @@ case "$RUNNER_OS" in
     ;;
   Windows)
     unzip -q "$scratch/$file" -d "$scratch"
+    mesa=/c/msys64/ucrt64/bin
+    cp "$mesa/opengl32.dll" "$scratch/${file%.zip}/"
+    export PATH="$mesa:$PATH"
+    export GALLIUM_DRIVER=llvmpipe
     python -B scripts/test_blender_workflows.py --binary target/release/dcc-cua.exe \
       --report "$RUNNER_TEMP/blender-workflows.json" --blender "$scratch/${file%.zip}/blender.exe"
     ;;

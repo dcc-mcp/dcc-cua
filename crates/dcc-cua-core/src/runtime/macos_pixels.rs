@@ -171,7 +171,9 @@ impl MacPixels {
         self.generation += 1;
         let provenance = json!({"backend":CAPTURE_BACKEND,"scope":"window","observation_mode":"pixels_only",
             "pixels_captured":true,"read_only":true,"input_available":false,"activation_available":false,
-            "accessibility_available":false,"degraded":false,"whole_desktop_capture":false,
+            "accessibility_available":false,
+            "accessibility_granted":platform_macos::permissions::status::accessibility_granted(),
+            "degraded":false,"whole_desktop_capture":false,
             "process_id":after.pid,"window_handle":after.window_id,"native_window_bounds":after.bounds,
             "native_bounds_units":"display_points","coordinate_units":"image_pixels",
             "process_start":self.process_start,"capture_generation":self.generation});

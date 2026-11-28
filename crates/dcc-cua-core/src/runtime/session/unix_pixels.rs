@@ -27,11 +27,16 @@ impl ComputerUseSession {
 
     pub(super) fn require_not_read_only_pixels(&self) -> ComputerUseResult<()> {
         if self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly) {
-            return Err(ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable,
-                "read-only native pixels sessions reject input, activation, accessibility and recording")
-                .with_details(ComputerUseErrorDetails { action_attempted: Some(false),
-                    input_sent: Some(ComputerUseInputState::NotSent), automatic_rebind: Some(false),
-                    ..Default::default() }));
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "the selected operation has no authorized exact-window pixel route",
+            )
+            .with_details(ComputerUseErrorDetails {
+                action_attempted: Some(false),
+                input_sent: Some(ComputerUseInputState::NotSent),
+                automatic_rebind: Some(false),
+                ..Default::default()
+            }));
         }
         Ok(())
     }
@@ -59,12 +64,87 @@ impl ComputerUseSession {
                         error.to_string(),
                     )
                 })??;
-        self.upstream_session_state = UpstreamSessionState::UnixPixelsOnly;
+        self.upstream_session_state = UpstreamSessionState::UnixPixelsOnly {
+            input_available: false,
+        };
         self.last_upstream_session_refresh = None;
         self.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
         let result = self.finish_started_session(target, &request, None).await?;
         self.unix_pixels = Some(handle);
         Ok(result)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn enable_guarded_x11_input(
+        &mut self,
+        lease: Arc<crate::RecordingAuthorization>,
+    ) -> ComputerUseResult<()> {
+        self.ensure_active()?;
+        let handle = self.unix_pixels.clone().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "guarded X11 input requires a retained exact pixel session",
+            )
+        })?;
+        unix_pixels::operate(handle, |bound| {
+            lease.with_active(|| ()).map_err(|_| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidTarget,
+                    "X11 input lease expired or was revoked",
+                )
+            })?;
+            bound.input_lease = Some(lease);
+            Ok(())
+        })
+        .await?;
+        self.upstream_session_state = UpstreamSessionState::UnixPixelsOnly {
+            input_available: true,
+        };
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) async fn guarded_x11_action(
+        &mut self,
+        action: &ComputerUseAction,
+        observation: ComputerUseObservation,
+        deadline: Option<Instant>,
+        generation: u64,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        use std::sync::atomic::AtomicBool;
+        struct Cancel(Arc<AtomicBool>);
+        impl Drop for Cancel {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let deadline = deadline.ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "guarded X11 input requires the connected task deadline",
+            )
+        })?;
+        super::super::pixel_input_policy::validate_pixel_action(action)?;
+        self.require_capture_preparation_settled()?;
+        let target = self.require_observed_target_available().await?;
+        reject_ambiguous_embedded_browser_navigation(action, &target)?;
+        validate_action_observation(action, &observation)?;
+        let handle = self.unix_pixels.clone().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "missing X11 input binding",
+            )
+        })?;
+        let cancel = Cancel(Arc::new(AtomicBool::new(false)));
+        let cancelled = Arc::clone(&cancel.0);
+        let action = action.clone();
+        self.invalidate_action_observations();
+        let result = unix_pixels::operate(handle, move |bound| {
+            bound.guarded_action(action, observation, deadline, generation, cancelled)
+        })
+        .await;
+        let result = self.finish_observation_sensitive_attempt(result)?;
+        Ok(self.complete_action(result))
     }
 
     pub(super) async fn screenshot_unix_pixels(

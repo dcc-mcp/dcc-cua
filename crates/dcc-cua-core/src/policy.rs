@@ -816,7 +816,7 @@ pub(crate) fn validate_action_route(
     if action.action == "key_sequence" && !exact_windows_pixels {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "key_sequence requires an exact Windows pixels_only task",
+            "key_sequence requires a guarded exact-window pixels_only task",
         ));
     }
     if action.action == "keypress"

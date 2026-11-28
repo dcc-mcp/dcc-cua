@@ -17,7 +17,8 @@ CASES = [("model", "blender-extrude-column.json"), ("rig", "blender-rig-keyframe
 NO_CONSOLE = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def unique_window(pid, directory):
+def unique_window(process, directory):
+    pid = process.pid
     if sys.platform == "darwin":
         finder = directory / "find-window"
         swift = directory / "find.swift"
@@ -39,6 +40,8 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid &
         command = ["wmctrl", "-lp"]
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"Blender exited before the fixture was ready (exit {process.returncode})")
         if not (directory / "ready").is_file():
             time.sleep(0.1)
             continue
@@ -51,7 +54,9 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid &
         if len(candidates) == 1:
             return candidates[0]
         time.sleep(0.1)
-    raise RuntimeError("no unique native window for the disposable Blender process")
+    if not (directory / "ready").exists():
+        raise RuntimeError("the Blender scene fixture did not reach its first UI timer")
+    raise RuntimeError("no unique native window for the ready Blender process")
 
 
 def angle(first, second):
@@ -160,6 +165,8 @@ def benchmark(binary, pid, window, directory, report):
                 call("change_window_state", {"operation": "restore_activate"})
         snapshot = call("snapshot", {})
         observation = snapshot["observation"]
+        if sys.platform == "darwin":
+            report["accessibility_granted"] = observation["capture_provenance"]["accessibility_granted"]
         assert (observation["process_id"], observation["window_handle"]) == (pid, window)
         if not capability:
             raise RuntimeError("guarded_key_sequence_v1 is absent from the native runtime manifest")
@@ -209,7 +216,7 @@ def main():
                                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        creationflags=NO_CONSOLE)
             try:
-                window = unique_window(process.pid, directory)
+                window = unique_window(process, directory)
                 try:
                     benchmark(args.binary.resolve(), process.pid, window, directory, report)
                 except Exception:

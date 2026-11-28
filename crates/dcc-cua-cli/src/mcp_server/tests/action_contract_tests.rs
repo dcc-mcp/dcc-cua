@@ -141,7 +141,10 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
     let raw_actions = variant("raw_input")["properties"]["action"]["enum"]
         .as_array()
         .unwrap();
-    assert_eq!(raw_actions.contains(&json!("key_sequence")), cfg!(windows));
+    assert_eq!(
+        raw_actions.contains(&json!("key_sequence")),
+        cfg!(any(windows, target_os = "linux"))
+    );
     assert_eq!(
         semantic["properties"]["authorization_category"]["enum"],
         json!(TrustedTaskActionScope::SEMANTIC_CATEGORIES)

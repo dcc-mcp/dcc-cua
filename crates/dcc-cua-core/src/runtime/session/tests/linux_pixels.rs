@@ -108,6 +108,152 @@ impl Fixture {
     }
 }
 
+#[rstest]
+#[case("focus", ComputerUseErrorCode::TargetUnavailable)]
+#[case("cover", ComputerUseErrorCode::CaptureFailed)]
+#[case("revoke", ComputerUseErrorCode::InvalidAction)]
+#[case("escape", ComputerUseErrorCode::UserInterrupted)]
+#[ignore = "requires a private authenticated Xvfb display"]
+#[tokio::test]
+async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
+    #[case] cause: &'static str,
+    #[case] expected: ComputerUseErrorCode,
+) {
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{InputFocus, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
+    use x11rb::protocol::xtest::ConnectionExt as _;
+
+    let fixture = Fixture::new();
+    let other = fixture.connection.generate_id().unwrap();
+    fixture.create(other, 180, 20, 0);
+    fixture
+        .connection
+        .set_input_focus(InputFocus::PARENT, fixture.window, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let lease = Arc::new(crate::RecordingAuthorization::new(u64::MAX));
+    let (mut session, _) = counting_session();
+    session.active = false;
+    session.scope = fixture.scope();
+    session.live_observation = None;
+    eprintln!(
+        "provider=dcc-cua runtime={} pid={} hwnd={}",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+        fixture.window
+    );
+    session.start_pixels_only().await.unwrap();
+    session
+        .enable_guarded_x11_input(lease.clone())
+        .await
+        .unwrap();
+    let snapshot = session.screenshot_pixels_only().await.unwrap();
+    let action: ComputerUseAction = serde_json::from_value(json!({
+        "action":"key_sequence","input_kind":"raw_input","intent":"ordinary_edit",
+        "delivery_mode":"foreground","observation_id":snapshot.observation.observation_id,
+        "keys":["A","B"],"delay_ms":200
+    }))
+    .unwrap();
+    let baseline = fixture
+        .connection
+        .query_tree(fixture.root)
+        .unwrap()
+        .reply()
+        .unwrap()
+        .children;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let intervene = async {
+        loop {
+            if let Some(Event::KeyRelease(key)) = fixture.connection.poll_for_event().unwrap() {
+                assert_eq!(key.event, fixture.window);
+                break;
+            }
+            assert!(Instant::now() < deadline, "first chord was never delivered");
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(
+            fixture
+                .connection
+                .query_tree(fixture.root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .children
+                .len(),
+            baseline.len() + 4
+        );
+        match cause {
+            "focus" => fixture
+                .connection
+                .set_input_focus(InputFocus::PARENT, other, x11rb::CURRENT_TIME)
+                .unwrap()
+                .check()
+                .unwrap(),
+            "cover" => fixture
+                .connection
+                .configure_window(other, &ConfigureWindowAux::new().x(20).y(20))
+                .unwrap()
+                .check()
+                .unwrap(),
+            "revoke" => lease.revoke(),
+            "escape" => {
+                let first = fixture.connection.setup().min_keycode;
+                let count = fixture.connection.setup().max_keycode - first + 1;
+                let map = fixture
+                    .connection
+                    .get_keyboard_mapping(first, count)
+                    .unwrap()
+                    .reply()
+                    .unwrap();
+                let escape = first
+                    + map
+                        .keysyms
+                        .chunks_exact(usize::from(map.keysyms_per_keycode))
+                        .position(|keys| keys[0] == 0xff1b)
+                        .unwrap() as u8;
+                for kind in [KEY_PRESS_EVENT, KEY_RELEASE_EVENT] {
+                    fixture
+                        .connection
+                        .xtest_fake_input(kind, escape, 0, fixture.root, 0, 0, 0)
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                }
+            }
+            _ => unreachable!(),
+        }
+    };
+    let (result, ()) = tokio::join!(
+        session.perform_action_with_deadline(&action, Some(deadline)),
+        intervene
+    );
+    let error = result.unwrap_err();
+    assert_eq!(error.code, expected);
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(true)
+    );
+    assert_eq!(structured_error_details(&error).blind_retry, Some(false));
+    assert!(session.stop().await.unwrap().success);
+    assert_eq!(
+        fixture
+            .connection
+            .query_tree(fixture.root)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .children,
+        baseline
+    );
+    while let Some(event) = fixture.connection.poll_for_event().unwrap() {
+        assert!(
+            !matches!(event, Event::KeyPress(key) if key.response_type & 0x80 != 0),
+            "a second synthetic chord was delivered after interruption"
+        );
+    }
+}
+
 // This is not silently skipped when a display is missing: CI invokes this
 // ignored native test explicitly, in its own authenticated Xvfb display.
 #[ignore = "requires a private non-composited X11 display; exercised in Linux CI"]

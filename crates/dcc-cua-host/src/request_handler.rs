@@ -775,6 +775,26 @@ async fn handle_request_inner(
                 ),
             )
             .await?;
+            #[cfg(target_os = "linux")]
+            if grant.observation_mode == TaskObservationMode::PixelsOnly && grant.allow_raw_input {
+                let lease = preauthorized.as_ref().and_then(|lease| {
+                    security_services
+                        .task_authorization_host
+                        .as_ref()?
+                        .recording_authorization(lease)
+                });
+                let Some(lease) = lease else {
+                    let _ = session.stop().await;
+                    return Err(denied(
+                        HostProtocolErrorCode::TaskAuthorizationDenied,
+                        "revocation-aware X11 task lease",
+                    ));
+                };
+                if let Err(error) = session.enable_guarded_x11_input(lease).await {
+                    let _ = session.stop().await;
+                    return Err(error.into());
+                }
+            }
             let Some(target) = session.target() else {
                 let _ = session.stop().await;
                 return Err(HostError::Protocol("CUA did not return a target".into()));
@@ -1814,7 +1834,11 @@ async fn handle_request_inner(
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
             revalidate_queued_action(host, &mut action).await?;
-            let deadline = if action.action == "key_sequence" {
+            let deadline = if action.action == "key_sequence"
+                || (cfg!(target_os = "linux")
+                    && host.observation_mode == TaskObservationMode::PixelsOnly
+                    && action.action == "click")
+            {
                 let lease = host
                     .bound_task_authorization(&session_id, "execute_action")
                     .ok_or_else(|| {

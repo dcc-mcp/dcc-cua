@@ -80,6 +80,8 @@ pub(crate) mod windows_held_key;
 mod windows_input;
 #[cfg(any(windows, test))]
 pub(crate) use windows_input::*;
+#[cfg(any(windows, target_os = "linux", test))]
+mod pixel_input_policy;
 mod window_commands;
 #[cfg(any(windows, test))]
 mod windows_pixel_input;
@@ -1592,7 +1594,9 @@ enum UpstreamSessionState {
     Inactive,
     Active,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    UnixPixelsOnly,
+    UnixPixelsOnly {
+        input_available: bool,
+    },
     #[cfg(windows)]
     VisualOnly {
         reason: String,

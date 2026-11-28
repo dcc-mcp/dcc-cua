@@ -343,7 +343,7 @@ jobs:
         timeout-minutes: 3
         shell: bash
         run: |
-          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp" \
+          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp -noreset" \
             cargo test --locked -p dcc-cua-core linux_pixels_native -- --ignored --test-threads=1
       - if: matrix.os == 'windows-latest'
         run: python -B -m unittest scripts.test_indicator_acceptance_probe

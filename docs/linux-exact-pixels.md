@@ -1,24 +1,24 @@
-# Read-only exact pixels on Linux X11
-
-This incremental implementation is stacked after #315 (Windows exact pixels
-and native recording) and #317 (bounded passive capture preparation). Merge and
-validate those foundations first, then revalidate this increment against the
-resulting main. A Linux CI pass does not validate their native Windows behavior.
+# Exact window pixels and foreground input on Linux X11
 
 The Linux route accepts `snapshot --pid PID --window-id XID --pixels-only`.
 It is deliberately limited to an authenticated local Unix X11 display without a
 compositor, a viewable unobscured rectangular window, and 24-bit TrueColor pixels.
-It never starts an accessibility session, invokes ImageMagick, captures/crops the
-desktop, changes focus, synthesizes input, records video, or changes permissions.
-`--activate`, raw input, live capture, capture preparation and recording remain
-unsupported for this route. macOS, Wayland/XWayland, remote X11, shaped windows,
+The one-shot snapshot is read-only. A connected Agent Host can separately grant
+`execute_action` and scoped foreground `raw_input/click` or
+`raw_input/key_sequence` on a retained session. The click uses the primary
+button with no modifier. Each chord requires the same focused, unobscured
+window, a live lease and a visible exterior execution frame. Escape interrupts
+the sequence. Clicks also check which window owns the destination before and
+after moving the cursor. Applications must accept exact-window X11 events.
+Activation, live capture, capture preparation and recording are unavailable
+on this route. Wayland/XWayland, remote X11, shaped windows,
 composited desktops and other pixel formats fail closed. These limits are also
 advertised in the platform manifest; protocol method names are not capabilities.
 
 The one-shot CLI selects a dedicated native SDK runtime with desktop preparation
 and cursor rendering disabled, without installing a cursor theme. Its DCC-facing
 tool inventory is empty, so accidental semantic or input dispatch is refused.
-Try CUA Driver 0.64.4 registers the optional `parse_visual_regions` entry in
+Try CUA Driver 0.65.0 registers the optional `parse_visual_regions` entry in
 the underlying SDK registry. DCC filters that entry from pixels-only inventory,
 and the unavailable perception client refuses calls without a DCC capture
 binding.
@@ -55,7 +55,7 @@ button authorization, and cross-application isolation are not provided here.
 
 ## Verification
 
-Linux CI compiles the exact pull-request head and runs two real Xvfb checks:
+Linux CI compiles the pull-request head and exercises native windows in Xvfb.
 
 - The core session test verifies a fresh second frame, no SDK/provider/input
   calls, refusal after destroy/recreate with the same PID/XID, and cancellation
@@ -72,7 +72,7 @@ Linux CI compiles the exact pull-request head and runs two real Xvfb checks:
   Wayland, remote DISPLAY, occlusion, hidden and closed targets. Failed commands
   must not create an output image.
 
-These synthetic native X11 checks do not constitute Wayland, native macOS,
-composited desktop, or production DCC acceptance. Linux runtime behavior is not
-considered verified until these exact-head CI checks pass. No version or release
-scope is changed by this increment.
+The Blender workflow runs on a separate Xvfb display with Openbox. One click
+sets the viewport context. A modeling batch and a rigging batch reuse the
+preceding action's observation. The fixture checks mesh geometry, bone
+parentage, animation keys and interpolation through Blender's scene data.
