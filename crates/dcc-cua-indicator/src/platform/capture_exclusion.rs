@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Threading::{CreateEventW, OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
-    ShowWindowAsync,
+    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindow, IsWindowVisible, SW_HIDE,
+    SW_SHOWNOACTIVATE, ShowWindow, ShowWindowAsync,
 };
 use windows::core::{BOOL, w};
 
@@ -410,12 +410,7 @@ unsafe extern "system" fn visible_overlay_owner(window: HWND, context: LPARAM) -
         if let Some(kind) = dcc_cua_overlay_kind(&String::from_utf16_lossy(&class[..len as usize]))
         {
             let mut pid = 0;
-            unsafe {
-                windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
-                    window,
-                    Some(&mut pid),
-                )
-            };
+            unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
             visible.push((kind, pid, window.0 as usize));
         }
     }
