@@ -7,6 +7,9 @@ use foreign_types::ForeignType;
 use platform_macos::input::{keyboard, mouse};
 use std::sync::atomic::AtomicBool;
 
+#[cfg(test)]
+mod tests;
+
 fn unavailable(message: &str) -> ComputerUseError {
     ComputerUseError::new(ComputerUseErrorCode::TargetUnavailable, message)
 }
@@ -45,10 +48,20 @@ impl<'a> Chord<'a> {
                     | "backspace"
                     | "delete"
             )
-            || key
-                .strip_prefix('f')
-                .and_then(|n| n.parse::<u8>().ok())
-                .is_some_and(|n| (1..=12).contains(&n));
+            || matches!(
+                key,
+                "f1" | "f2"
+                    | "f3"
+                    | "f4"
+                    | "f5"
+                    | "f6"
+                    | "f7"
+                    | "f8"
+                    | "f9"
+                    | "f10"
+                    | "f11"
+                    | "f12"
+            );
         if !supported
             || modifiers.iter().enumerate().any(|(i, m)| {
                 !matches!(*m, "ctrl" | "shift" | "alt" | "cmd") || modifiers[..i].contains(m)

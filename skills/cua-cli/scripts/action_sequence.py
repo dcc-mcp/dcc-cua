@@ -8,7 +8,7 @@ when supplied, checks the application's effect before the next step.
 from time import perf_counter
 
 
-def run_sequence(steps, dispatch, journal, verify=None):
+def run_sequence(steps, dispatch, journal, verify=None, next_observation=None):
     if not isinstance(steps, list) or not 1 <= len(steps) <= 64:
         raise ValueError("expected 1–64 declared steps")
     for number, step in enumerate(steps, 1):
@@ -18,15 +18,23 @@ def run_sequence(steps, dispatch, journal, verify=None):
         entry = {"step": number, "action": step["action"], "status": "pending"}
         journal.append(entry)
         start = perf_counter()
+        failure_status = "dispatch_unconfirmed"
         try:
-            receipt = dispatch(step, number == len(steps))
+            last = number == len(steps)
+            receipt = dispatch(step, last)
             entry["dispatch_ms"] = round((perf_counter() - start) * 1000)
             entry["status"] = "delivered"
+            if next_observation is not None:
+                entry["delivery_status"] = receipt["status"]
+                if not last:
+                    failure_status = "observation_failed"
+                    next_observation(receipt)
             if verify is not None:
+                failure_status = "verification_failed"
                 entry["readback"] = verify(step, receipt)
                 entry["status"] = "verified"
         except Exception:
-            entry["status"] = "verification_failed" if entry["status"] == "delivered" else "dispatch_unconfirmed"
+            entry["status"] = failure_status
             raise
         finally:
             entry["elapsed_ms"] = round((perf_counter() - start) * 1000)
@@ -43,21 +51,22 @@ def window_sequence(call, target, initial_snapshot, steps, journal, verify=None)
     observation_id = bound_id(initial_snapshot)
 
     def dispatch(action, last):
-        nonlocal observation_id
         receipt = call("execute_action", {"observation_id": observation_id, "action": action,
                                          "capture_after": not last})
         if receipt.get("status") != "succeeded":
             raise RuntimeError("window action did not complete")
-        if not last:
-            post = receipt["post_snapshot"]
-            if post.get("success") is False:
-                if post.get("action_was_executed") is not True or receipt.get("observation_required") is not True:
-                    raise RuntimeError("post-action capture is ambiguous")
-                post = call("snapshot", {})
-            observation_id = bound_id(post)
         return receipt
 
-    run_sequence(steps, dispatch, journal, verify)
+    def next_observation(receipt):
+        nonlocal observation_id
+        post = receipt["post_snapshot"]
+        if post.get("success") is False:
+            if post.get("action_was_executed") is not True or receipt.get("observation_required") is not True:
+                raise RuntimeError("post-action capture is ambiguous")
+            post = call("snapshot", {})
+        observation_id = bound_id(post)
+
+    run_sequence(steps, dispatch, journal, verify, next_observation)
 
 
 def browser_pointer_sequence(call, target_id, tab_id, steps, journal, verify=None):

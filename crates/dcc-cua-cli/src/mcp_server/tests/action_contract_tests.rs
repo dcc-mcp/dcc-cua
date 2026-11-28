@@ -213,3 +213,14 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
         true
     );
 }
+
+#[rstest]
+fn pixel_move_scope_matches_native_platform_support() {
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot", "execute_action"]);
+    task["allowed_actions"] = json!([{"action":"move", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]);
+    assert_eq!(
+        test_server().prepare_task(task).is_ok(),
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    );
+}
