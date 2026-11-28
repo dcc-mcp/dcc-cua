@@ -7,19 +7,19 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Upstream synchronization status
 
-The workspace tracks the upstream Try CUA Driver source tag `cua-driver-rs-v0.67.0`.
+The workspace tracks the upstream Try CUA Driver source tag `cua-driver-rs-v0.68.0`.
 DCC CUA pins its immutable release commit
-`trycua/cua@7ee02b7b435102e2d7f9088ac2e5208885a57b7e` across the runtime,
+`trycua/cua@cb4f8dbe279c9f815efdef888ec938fb89bab8d6` across the runtime,
 platform adapters, cursor renderer, testkit and generated workspace-hack
 manifest.
 
-The source update moves from Driver 0.60.0 to the official upstream 0.67.0
+The source update moves from Driver 0.60.0 to the official upstream 0.68.0
 release. The dependency contract, lockfile resolution, downstream compilation,
 formatting, linting and native acceptance remain required gates for delivery.
 
 ## Current source candidate
 
-The current source candidate is the official `trycua/cua` Driver 0.67.0
+The current source candidate is the official `trycua/cua` Driver 0.68.0
 release commit above. The prior Driver 0.60.0 validation record and the older
 `loonghao/cua` compatibility history remain below for migration traceability.
 
