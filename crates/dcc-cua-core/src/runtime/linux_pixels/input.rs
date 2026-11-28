@@ -1,3 +1,4 @@
+mod pointer;
 use super::execution_frame::ExecutionFrame;
 use super::*;
 use std::sync::atomic::AtomicBool;
@@ -282,19 +283,7 @@ impl LinuxPixels {
                     "X11 input requires an unmodified pointer on the same display",
                 ));
             }
-            let coords = if action.action == "click" {
-                let coordinate = |v: Option<f64>, max: u32| {
-                    v.filter(|n| n.is_finite() && *n >= 0. && *n < f64::from(max))
-                        .and_then(|n| i16::try_from(n.floor() as i32).ok())
-                        .ok_or_else(|| invalid("click outside exact window"))
-                };
-                (
-                    coordinate(action.x, observation.width)?,
-                    coordinate(action.y, observation.height)?,
-                )
-            } else {
-                (pointer.win_x, pointer.win_y)
-            };
+            let coords = (pointer.win_x, pointer.win_y);
             let [x, y, _, _] = observation.source_rect;
             let base = KeyPressEvent {
                 time: frame.timestamp(),
@@ -308,51 +297,8 @@ impl LinuxPixels {
                 same_screen: true,
                 ..Default::default()
             };
-            if action.action == "click" {
-                if !action.modifiers.is_empty()
-                    || action.button.as_deref().is_some_and(|b| b != "left")
-                {
-                    return Err(invalid(
-                        "X11 click currently supports the primary button without modifiers",
-                    ));
-                }
-                let _fence = self.dispatch_fence(&frame, &guard)?;
-                let destination = self.pointer_destination(base.root_x, base.root_y)?;
-                let admission = self.admit_input(&guard)?;
-                attempted = true;
-                self.connection
-                    .warp_pointer(x11rb::NONE, self.window, 0, 0, 0, 0, coords.0, coords.1)
-                    .map_err(native)?
-                    .check()
-                    .map_err(native)?;
-                drop(admission);
-                let landed = self
-                    .connection
-                    .query_pointer(self.window)
-                    .map_err(native)?
-                    .reply()
-                    .map_err(native)?;
-                if !landed.same_screen || (landed.win_x, landed.win_y) != coords {
-                    return Err(refused(
-                        ComputerUseErrorCode::TargetUnavailable,
-                        "X11 cursor did not land in the exact client",
-                    ));
-                }
-                if self.pointer_destination(base.root_x, base.root_y)? != destination {
-                    return Err(refused(
-                        ComputerUseErrorCode::TargetUnavailable,
-                        "the X11 client under the pointer changed",
-                    ));
-                }
-                let _admission = self.admit_input(&guard)?;
-                let base = KeyPressEvent {
-                    event: destination.0,
-                    event_x: destination.1,
-                    event_y: destination.2,
-                    ..base
-                };
-                self.send_event(base, BUTTON_PRESS_EVENT, 1, 0)?;
-                self.send_event(base, BUTTON_RELEASE_EVENT, 1, 1 << 8)?;
+            if matches!(action.action.as_str(), "move" | "click" | "drag") {
+                self.pointer_action(&action, base, &guard, &frame, &mut attempted)?;
             } else {
                 for (index, chord) in steps.iter().enumerate() {
                     if index != 0 {

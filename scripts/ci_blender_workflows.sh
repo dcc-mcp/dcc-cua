@@ -35,8 +35,7 @@ if [[ "$downloaded" != true ]]; then
   echo "No verified Blender $version archive available for $RUNNER_OS" >&2
   exit 1
 fi
-runner=()
-geometry=()
+runner=(python -B scripts/test_blender_workflows.py)
 binary=target/release/dcc-cua
 case "$RUNNER_OS" in
   Linux)
@@ -47,7 +46,7 @@ case "$RUNNER_OS" in
       bash -ec 'openbox >/dev/null 2>&1 &
         for _ in {1..100}; do wmctrl -m >/dev/null 2>&1 && break; sleep 0.05; done
         wmctrl -m >/dev/null
-        exec "$@"' --)
+        exec "$@"' -- "${runner[@]}")
     blender="$scratch/${file%.tar.xz}/blender"
     ;;
   macOS)
@@ -57,7 +56,7 @@ case "$RUNNER_OS" in
     hdiutil detach "$scratch/mount"
     trap - EXIT
     blender="$scratch/Blender.app/Contents/MacOS/Blender"
-    geometry=(--window-geometry 80 160 700 420)
+    runner+=(--window-geometry 80 160 700 420)
     ;;
   Windows)
     unzip -q "$scratch/$file" -d "$scratch"
@@ -69,6 +68,6 @@ case "$RUNNER_OS" in
     blender="$scratch/${file%.zip}/blender.exe"
     ;;
 esac
-command=(python -B scripts/test_blender_workflows.py --binary "$binary" --blender "$blender" "${geometry[@]}")
-"${runner[@]}" "${command[@]}" --report "$RUNNER_TEMP/blender-workflows.json"
-"${runner[@]}" "${command[@]}" --pointer-sequence --report "$RUNNER_TEMP/blender-pointer.json"
+runner+=(--binary "$binary" --blender "$blender")
+"${runner[@]}" --report "$RUNNER_TEMP/blender-workflows.json"
+"${runner[@]}" --pointer-sequence --report "$RUNNER_TEMP/blender-pointer.json"

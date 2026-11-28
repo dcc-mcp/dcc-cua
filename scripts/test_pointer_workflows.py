@@ -26,6 +26,7 @@ def benchmark_pointer(binary, pid, hwnd, directory, report):
 
         opened = checked(mcp.tool("start_task", {
             "application_label": "Disposable Blender pointer benchmark", "surface": "window",
+            "observation_mode": "pixels_only" if sys.platform.startswith("linux") else "semantic",
             "target_process_id": pid, "target_window_handle": hwnd, "ttl_minutes": 3,
             "allowed_methods": ["snapshot", "execute_action"],
             "allowed_actions": [{"action": name, "input_kind": "raw_input", "secret_input": False,

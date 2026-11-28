@@ -114,7 +114,10 @@ Compare client wall time through verified completion with
 `result.delivery.key_sequence_timing.dispatch_ms` and `inter_step_wait_ms`.
 Record image bytes separately from Host-reported model usage. The X11 route
 requires a local non-composited display, exact focus and space for an exposed
-exterior band. On macOS capture needs Screen Recording permission. Input also
+exterior band. Use its advertised pixels-only move, click and drag actions
+for Blender pointer scripts. Keep a primary-button drag on the bound client
+window and verify intermediate motion and release through application events.
+On macOS capture needs Screen Recording permission. Input also
 requires Accessibility, exact AX window focus, an exposed native frame and a
 working Escape monitor. Check the returned capability and native refusal reason
 on the user's desktop.

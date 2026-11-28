@@ -25,7 +25,7 @@ pub(super) fn validate_pixel_interrupt(
 }
 
 pub(super) fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
-    if !matches!(
+    let supported = matches!(
         action.action.as_str(),
         "click"
             | "double_click"
@@ -37,7 +37,9 @@ pub(super) fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseRe
             | "keyboard_shortcut"
             | "type"
             | "type_chars"
-    ) || action.element_index.is_some()
+    ) || cfg!(target_os = "linux") && action.action == "move";
+    if !supported
+        || action.element_index.is_some()
         || action.element_token.is_some()
         || action.input_backend_id.is_some()
         || action
@@ -93,7 +95,25 @@ pub(super) fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseRe
             "pixels_only clicks require screenshot coordinates and do not support held buttons",
         ));
     }
-    if !click && !drag && (action.x.is_some() || action.y.is_some() || action.button.is_some()) {
+    let movement = action.action == "move";
+    if movement
+        && (action.x.is_none()
+            || action.y.is_none()
+            || action.button.is_some()
+            || !action.modifiers.is_empty()
+            || !action.keys.is_empty()
+            || action.duration_ms.is_some())
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "pixel move requires an unmodified window-local point",
+        ));
+    }
+    if !click
+        && !drag
+        && !movement
+        && (action.x.is_some() || action.y.is_some() || action.button.is_some())
+    {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "pixels_only keypress and text actions use the existing exact foreground focus",

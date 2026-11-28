@@ -1817,7 +1817,9 @@ async fn handle_request_inner(
             let deadline = if action.action == "key_sequence"
                 || (cfg!(any(target_os = "linux", target_os = "macos"))
                     && host.observation_mode == TaskObservationMode::PixelsOnly
-                    && action.action == "click")
+                    && (action.action == "click"
+                        || cfg!(target_os = "linux")
+                            && matches!(action.action.as_str(), "move" | "drag")))
             {
                 let lease = host
                     .bound_task_authorization(&session_id, "execute_action")

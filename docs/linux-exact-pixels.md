@@ -4,12 +4,13 @@ The Linux route accepts `snapshot --pid PID --window-id XID --pixels-only`.
 It is deliberately limited to an authenticated local Unix X11 display without a
 compositor, a viewable unobscured rectangular window, and 24-bit TrueColor pixels.
 The one-shot snapshot is read-only. A connected Agent Host can separately grant
-`execute_action` and scoped foreground `raw_input/click` or
-`raw_input/key_sequence` on a retained session. The click uses the primary
-button with no modifier. Each chord requires the same focused, unobscured
+`execute_action` with foreground `raw_input` scopes for `move`, `click`,
+`drag` and `key_sequence` on a retained session. Click and drag use the
+unmodified primary button. Each pointer sample and chord requires the same focused, unobscured
 window, a live lease and a visible exterior execution frame. Escape interrupts
-the sequence. Clicks also check which window owns the destination before and
-after moving the cursor. Applications must accept exact-window X11 events.
+the sequence. Each pointer sample checks the destination before and after
+moving the cursor. A drag stays on the bound client window for its entire
+path. Applications must accept exact-window X11 events.
 Activation, live capture, capture preparation and recording are unavailable
 on this route. Wayland/XWayland, remote X11, shaped windows,
 composited desktops and other pixel formats fail closed. These limits are also
@@ -76,3 +77,5 @@ The Blender workflow runs on a separate Xvfb display with Openbox. One click
 sets the viewport context. A modeling batch and a rigging batch reuse the
 preceding action's observation. The fixture checks mesh geometry, bone
 parentage, animation keys and interpolation through Blender's scene data.
+The pointer script checks the viewport's free motion, primary press and
+release, and intermediate motion while the primary button is held.
