@@ -65,6 +65,11 @@ impl Exposure {
     }
 
     pub(in crate::platform) fn exposed(self) -> bool {
+        // The renderer records monitor and band rectangles in physical pixels.
+        // An input worker can arrive with a different thread DPI context.
+        let Ok(_awareness) = ThreadDpiAwareness::enter() else {
+            return false;
+        };
         let window = HWND(self.window as *mut _);
         let mut bounds = RECT::default();
         if !unsafe { IsWindowVisible(window) }.as_bool()

@@ -4,7 +4,38 @@ use rstest::rstest;
 #[rstest]
 #[ignore = "requires an interactive Windows desktop with DWM"]
 fn compositor_accepts_the_owned_execution_frame() {
-    let _frame = ExecutionFrame::new().unwrap();
+    let awareness = ThreadDpiAwareness::enter().unwrap();
+    let frame = ExecutionFrame::new().unwrap();
+    let cover = ExecutionFrame::new().unwrap();
+    println!(
+        "provider=dcc-cua runtime={} pid={} hwnd={}",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+        frame.window.0.0 as usize
+    );
+    let monitor = read_monitor_geometry(frame.window.0).unwrap();
+    let rect = [monitor.work_left + 32, monitor.work_top + 32, 32, 3];
+    let show = |window| unsafe {
+        SetWindowPos(
+            window,
+            Some(HWND_TOPMOST),
+            rect[0],
+            rect[1],
+            rect[2],
+            rect[3],
+            SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+        .unwrap();
+    };
+    show(frame.window.0);
+    let exposure = Exposure::new(&frame.window, Placement::Edge(rect), monitor, 3);
+    assert!(exposure.exposed(), "uncovered native band");
+    show(cover.window.0);
+    drop(awareness);
+    assert!(unsafe { IsWindowVisible(frame.window.0) }.as_bool());
+    assert!(!exposure.exposed(), "higher native window covers the band");
+    drop(cover);
+    assert!(exposure.exposed(), "the original band is exposed again");
 }
 
 #[rstest]
