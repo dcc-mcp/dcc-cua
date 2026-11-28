@@ -883,5 +883,7 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub mod macos_frame;
 #[cfg(test)]
 mod tests;

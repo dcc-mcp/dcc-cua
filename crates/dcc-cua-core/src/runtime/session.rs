@@ -770,7 +770,7 @@ impl ComputerUseSession {
         }
         #[cfg(windows)]
         let capture_popup_metadata = self.capture_popup_metadata.take();
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         let pixel_started_generation = dcc_cua_interrupt::interrupt_generation();
         self.ensure_active()?;
         let _preparing_activity = self.begin_banner_activity(banner_activity_for_action_phase(
@@ -782,16 +782,16 @@ impl ComputerUseSession {
             self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
         #[cfg(not(windows))]
         let exact_windows_pixels = false;
-        #[cfg(target_os = "linux")]
-        let x11_input = matches!(
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let unix_input = matches!(
             self.upstream_session_state,
             UpstreamSessionState::UnixPixelsOnly {
                 input_available: true
             }
         ) && matches!(action.action.as_str(), "click" | "key_sequence");
-        #[cfg(not(target_os = "linux"))]
-        let x11_input = false;
-        validate_action_route(action, exact_windows_pixels || x11_input)?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let unix_input = false;
+        validate_action_route(action, exact_windows_pixels || unix_input)?;
         validate_window_action_coordinates(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
@@ -805,10 +805,10 @@ impl ComputerUseSession {
                 "action observation_id does not match the latest screenshot",
             ));
         }
-        #[cfg(target_os = "linux")]
-        if x11_input {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if unix_input {
             return self
-                .guarded_x11_action(
+                .guarded_unix_action(
                     action,
                     observation,
                     authorization_deadline,

@@ -117,12 +117,16 @@ struct InputGuard<'a> {
 }
 
 impl LinuxPixels {
-    fn require_pointer_destination(&self, root_x: i16, root_y: i16) -> ComputerUseResult<()> {
+    fn pointer_destination(&self, root_x: i16, root_y: i16) -> ComputerUseResult<(u32, i16, i16)> {
         // Hit-test the stacked X11 window hierarchy at the requested screen
         // point before moving the physical cursor. An input-only overlay can
         // intercept the pointer without contributing any captured pixels.
         let mut parent = self.root;
+        let mut in_target = false;
+        let client_bits = !self.connection.setup().resource_id_mask;
+        let owner = self.window & client_bits;
         for _ in 0..32 {
+            in_target |= parent == self.window;
             let location = self
                 .connection
                 .translate_coordinates(self.root, parent, root_x, root_y)
@@ -133,9 +137,14 @@ impl LinuxPixels {
                 break;
             }
             if location.child == 0 {
-                if parent == self.window {
-                    return Ok(());
+                if in_target {
+                    return Ok((parent, location.dst_x, location.dst_y));
                 }
+                break;
+            }
+            // The server assigns each client a disjoint XID range. A native
+            // child must belong to the exact target's creating connection.
+            if in_target && (owner == 0 || location.child & client_bits != owner) {
                 break;
             }
             parent = location.child;
@@ -277,7 +286,7 @@ impl LinuxPixels {
                         "X11 click currently supports the primary button without modifiers",
                     ));
                 }
-                self.require_pointer_destination(base.root_x, base.root_y)?;
+                let destination = self.pointer_destination(base.root_x, base.root_y)?;
                 frame.validate(self)?;
                 let admission = self.admit_input(&guard)?;
                 attempted = true;
@@ -293,19 +302,27 @@ impl LinuxPixels {
                     .map_err(native)?
                     .reply()
                     .map_err(native)?;
-                if !landed.same_screen
-                    || (landed.win_x, landed.win_y) != coords
-                    || landed.child != 0
-                {
+                if !landed.same_screen || (landed.win_x, landed.win_y) != coords {
                     return Err(refused(
                         ComputerUseErrorCode::TargetUnavailable,
                         "X11 cursor did not land in the exact client",
                     ));
                 }
-                self.require_pointer_destination(base.root_x, base.root_y)?;
+                if self.pointer_destination(base.root_x, base.root_y)? != destination {
+                    return Err(refused(
+                        ComputerUseErrorCode::TargetUnavailable,
+                        "the X11 client under the pointer changed",
+                    ));
+                }
                 self.validate_input(&guard)?;
                 frame.validate(self)?;
                 let _admission = self.admit_input(&guard)?;
+                let base = KeyPressEvent {
+                    event: destination.0,
+                    event_x: destination.1,
+                    event_y: destination.2,
+                    ..base
+                };
                 self.send_event(base, BUTTON_PRESS_EVENT, 1, 0)?;
                 self.send_event(base, BUTTON_RELEASE_EVENT, 1, 1 << 8)?;
             } else {
@@ -403,7 +420,7 @@ impl LinuxPixels {
         self.connection
             .send_event(
                 false,
-                self.window,
+                base.event,
                 EventMask::NO_EVENT,
                 KeyPressEvent {
                     response_type: kind,

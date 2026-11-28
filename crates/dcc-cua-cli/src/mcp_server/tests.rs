@@ -1521,7 +1521,7 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
         "right_click",
         "toggle",
         "drag",
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         "key_sequence",
         "keypress",
         "keyboard_shortcut",

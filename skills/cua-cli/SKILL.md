@@ -77,12 +77,13 @@ Keyboard actions use `keys: ["ENTER"]`, not a singular `key` field.
 
 For a deterministic Blender workflow, inspect the installed runtime and its
 platform capabilities first. Look for `guarded_key_sequence_v1` in the Host
-capabilities. Windows and supported local X11 exact-window foreground tasks support
+capabilities. Supported Windows, macOS and local X11 exact-window foreground tasks support
 the separately granted `raw_input/key_sequence` action. Submit 1–64 ordered
 taps or chords in `keys` with one fresh observation on the same connection.
 The [modeling](../../examples/blender-extrude-column.json) and
 [rig animation](../../examples/blender-rig-keyframes.json) actions use
-`delay_ms=0` with Blender 5.1.1 factory settings and its default English keymap.
+Blender 5.1.1 factory settings and its default English keymap. The model uses
+zero inter-step delay. The animation allows 40 ms between chords for pose updates.
 The modeling example selects the second result for “Add Mesh Plane”. Check the
 menu before using that sequence with another version, locale or search history.
 End the batch when the
@@ -100,8 +101,10 @@ Compare client wall time through verified completion with
 `result.delivery.key_sequence_timing.dispatch_ms` and `inter_step_wait_ms`.
 Record image bytes separately from Host-reported model usage. The X11 route
 requires a local non-composited display, exact focus and space for an exposed
-exterior band. macOS exact-window pixels currently support read-only capture
-with Screen Recording permission.
+exterior band. On macOS capture needs Screen Recording permission. Input also
+requires Accessibility, exact AX window focus, an exposed native frame and a
+working Escape monitor. Check the returned capability and native refusal reason
+on the user's desktop.
 
 Raw `x`/`y` refer to the encoded image dimensions in `coordinate_space`, never
 UIA virtual-desktop bounds or the size of an on-screen preview. Convert a

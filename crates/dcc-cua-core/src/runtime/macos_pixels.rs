@@ -3,6 +3,7 @@ use super::unix_pixels::{CAPTURE_BACKEND, Handle};
 use super::*;
 use std::mem::{MaybeUninit, size_of};
 use std::sync::Mutex;
+mod input;
 
 pub(super) struct MacPixels {
     scope: ComputerUseTargetScope,
@@ -12,6 +13,7 @@ pub(super) struct MacPixels {
     authorization: Option<(String, Arc<crate::NativeTaskAuthorization>)>,
     generation: u64,
     usable: bool,
+    pub(super) input_lease: Option<Arc<crate::RecordingAuthorization>>,
 }
 
 fn invalid(message: &str) -> ComputerUseError {
@@ -65,6 +67,7 @@ impl MacPixels {
             authorization,
             generation: 0,
             usable: true,
+            input_lease: None,
         };
         let target = bound.evidence()?;
         Ok((Arc::new(Mutex::new(bound)), target))
@@ -170,7 +173,8 @@ impl MacPixels {
         }
         self.generation += 1;
         let provenance = json!({"backend":CAPTURE_BACKEND,"scope":"window","observation_mode":"pixels_only",
-            "pixels_captured":true,"read_only":true,"input_available":false,"activation_available":false,
+            "pixels_captured":true,"read_only":self.input_lease.is_none(),
+            "input_available":self.input_lease.is_some(),"activation_available":false,
             "accessibility_available":false,
             "accessibility_granted":platform_macos::permissions::status::accessibility_granted(),
             "degraded":false,"whole_desktop_capture":false,

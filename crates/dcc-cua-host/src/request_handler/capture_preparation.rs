@@ -158,3 +158,15 @@ pub(super) async fn snapshot(
     let image = prepare_image_transport(vec![image], mode, &mut host.latest_preparation_image)?;
     super::passive_preparation_snapshot_response(&session_id, metadata, image)
 }
+
+pub(crate) fn validate_snapshot_capture_diagnostics(
+    mode: TaskObservationMode,
+    capture_diagnostics: bool,
+) -> Result<(), HostError> {
+    if capture_diagnostics && mode != TaskObservationMode::PixelsOnly {
+        return Err(HostError::Protocol(
+            "capture_diagnostics is available only for an explicit pixels_only snapshot".into(),
+        ));
+    }
+    Ok(())
+}

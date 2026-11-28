@@ -113,8 +113,8 @@ impl Fixture {
 #[case("cover", ComputerUseErrorCode::CaptureFailed)]
 #[case("revoke", ComputerUseErrorCode::InvalidAction)]
 #[case("escape", ComputerUseErrorCode::UserInterrupted)]
-#[ignore = "requires a private authenticated Xvfb display"]
 #[tokio::test]
+#[ignore = "requires a private authenticated Xvfb display"]
 async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
     #[case] cause: &'static str,
     #[case] expected: ComputerUseErrorCode,
@@ -145,7 +145,7 @@ async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
     );
     session.start_pixels_only().await.unwrap();
     session
-        .enable_guarded_x11_input(lease.clone())
+        .enable_guarded_unix_input(lease.clone())
         .await
         .unwrap();
     let snapshot = session.screenshot_pixels_only().await.unwrap();
@@ -252,6 +252,92 @@ async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
             "a second synthetic chord was delivered after interruption"
         );
     }
+}
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+#[ignore = "requires a private authenticated Xvfb display"]
+async fn linux_pixels_native_click_only_reaches_a_same_client_child(#[case] same_client: bool) {
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::InputFocus;
+    let fixture = Fixture::new();
+    let (foreign, _) = x11rb::connect(None).unwrap();
+    let creator = if same_client {
+        &fixture.connection
+    } else {
+        &foreign
+    };
+    let child = creator.generate_id().unwrap();
+    creator
+        .create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            child,
+            fixture.window,
+            5,
+            5,
+            20,
+            20,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    creator.map_window(child).unwrap().check().unwrap();
+    fixture
+        .connection
+        .set_input_focus(InputFocus::PARENT, fixture.window, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let (mut session, _) = counting_session();
+    session.active = false;
+    session.scope = fixture.scope();
+    session.live_observation = None;
+    eprintln!(
+        "provider=dcc-cua runtime={} pid={} hwnd={}",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+        fixture.window
+    );
+    session.start_pixels_only().await.unwrap();
+    session
+        .enable_guarded_unix_input(Arc::new(crate::RecordingAuthorization::new(u64::MAX)))
+        .await
+        .unwrap();
+    let observation = session.screenshot_pixels_only().await.unwrap().observation;
+    let action = ComputerUseAction {
+        action: "click".into(),
+        x: Some(8.),
+        y: Some(9.),
+        observation_id: Some(observation.observation_id),
+        ..Default::default()
+    };
+    let result = session
+        .perform_action_with_deadline(&action, Some(Instant::now() + Duration::from_secs(3)))
+        .await;
+    if same_client {
+        result.unwrap();
+        let mut coordinates = None;
+        while let Some(event) = creator.poll_for_event().unwrap() {
+            if let Event::ButtonRelease(button) = event {
+                coordinates = Some((button.event, button.event_x, button.event_y));
+            }
+        }
+        assert_eq!(coordinates, Some((child, 3, 4)));
+    } else {
+        let error = result.unwrap_err();
+        assert_eq!(
+            structured_error_details(&error).input_sent,
+            Some(ComputerUseInputState::NotSent)
+        );
+        assert_eq!(error.code, ComputerUseErrorCode::TargetUnavailable);
+    }
+    assert!(session.stop().await.unwrap().success);
 }
 
 // This is not silently skipped when a display is missing: CI invokes this

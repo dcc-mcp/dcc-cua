@@ -143,7 +143,7 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
         .unwrap();
     assert_eq!(
         raw_actions.contains(&json!("key_sequence")),
-        cfg!(any(windows, target_os = "linux"))
+        cfg!(any(windows, target_os = "linux", target_os = "macos"))
     );
     assert_eq!(
         semantic["properties"]["authorization_category"]["enum"],

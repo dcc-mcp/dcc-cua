@@ -41,8 +41,16 @@ fn executable_manifest_matches_public_host_capabilities() {
     }
     if cfg!(target_os = "macos") {
         assert_eq!(pixels["availability"], "macos_on_screen_application_window");
-        assert_eq!(pixels["read_only"], true);
-        assert_eq!(pixels["input_available"], false);
+        assert_eq!(pixels["read_only_by_default"], true);
+        assert_eq!(
+            pixels["input_actions"],
+            serde_json::json!(["click", "key_sequence"])
+        );
+        assert_eq!(pixels["input_available"], true);
+        assert_eq!(
+            pixels["key_sequence"]["requires_visible_execution_frame"],
+            true
+        );
         assert_eq!(pixels["activation_available"], false);
         assert_eq!(pixels["recording_available"], false);
     }

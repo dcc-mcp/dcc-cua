@@ -80,7 +80,7 @@ pub(crate) mod windows_held_key;
 mod windows_input;
 #[cfg(any(windows, test))]
 pub(crate) use windows_input::*;
-#[cfg(any(windows, target_os = "linux", test))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 mod pixel_input_policy;
 mod window_commands;
 #[cfg(any(windows, test))]

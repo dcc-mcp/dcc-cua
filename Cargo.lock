@@ -1212,6 +1212,7 @@ dependencies = [
  "dcc-cua-client",
  "dcc-cua-core",
  "dcc-cua-host",
+ "dcc-cua-indicator",
  "dcc-cua-platform-windows",
  "dcc-cua-profiles",
  "dcc-cua-protocol",
@@ -1330,6 +1331,7 @@ dependencies = [
 name = "dcc-cua-indicator"
 version = "1.22.0"
 dependencies = [
+ "cc",
  "dcc-cua-interrupt",
  "dcc-cua-workspace-hack",
  "rstest",

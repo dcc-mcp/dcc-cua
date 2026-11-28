@@ -11,21 +11,11 @@ mod session_helpers;
 mod verification;
 use crate::timing::{HostTimingPhase as Phase, measure_phase as timed};
 pub(super) use capture_preparation::passive_preparation_snapshot_response;
+pub(super) use capture_preparation::validate_snapshot_capture_diagnostics;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(super) use request_timing::handle_request_with_security_services;
 pub(crate) use session_helpers::*;
-pub(super) fn validate_snapshot_capture_diagnostics(
-    mode: TaskObservationMode,
-    capture_diagnostics: bool,
-) -> Result<(), HostError> {
-    if capture_diagnostics && mode != TaskObservationMode::PixelsOnly {
-        return Err(HostError::Protocol(
-            "capture_diagnostics is available only for an explicit pixels_only snapshot".into(),
-        ));
-    }
-    Ok(())
-}
 
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
@@ -775,26 +765,14 @@ async fn handle_request_inner(
                 ),
             )
             .await?;
-            #[cfg(target_os = "linux")]
-            if grant.observation_mode == TaskObservationMode::PixelsOnly && grant.allow_raw_input {
-                let lease = preauthorized.as_ref().and_then(|lease| {
-                    security_services
-                        .task_authorization_host
-                        .as_ref()?
-                        .recording_authorization(lease)
-                });
-                let Some(lease) = lease else {
-                    let _ = session.stop().await;
-                    return Err(denied(
-                        HostProtocolErrorCode::TaskAuthorizationDenied,
-                        "revocation-aware X11 task lease",
-                    ));
-                };
-                if let Err(error) = session.enable_guarded_x11_input(lease).await {
-                    let _ = session.stop().await;
-                    return Err(error.into());
-                }
-            }
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            enable_granted_pixel_input(
+                &grant,
+                preauthorized.as_ref(),
+                security_services,
+                &mut session,
+            )
+            .await?;
             let Some(target) = session.target() else {
                 let _ = session.stop().await;
                 return Err(HostError::Protocol("CUA did not return a target".into()));

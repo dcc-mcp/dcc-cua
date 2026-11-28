@@ -64,6 +64,35 @@ pub(crate) async fn start_granted_window_session(
     Ok((session, started))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn enable_granted_pixel_input(
+    grant: &TaskGrant,
+    preauthorized: Option<&TrustedTaskAuthorizationLease>,
+    security_services: &HostSecurityServices,
+    session: &mut dcc_cua_core::ComputerUseSession,
+) -> Result<(), HostError> {
+    if grant.observation_mode == TaskObservationMode::PixelsOnly && grant.allow_raw_input {
+        let lease = preauthorized.and_then(|lease| {
+            security_services
+                .task_authorization_host
+                .as_ref()?
+                .recording_authorization(lease)
+        });
+        let Some(lease) = lease else {
+            let _ = session.stop().await;
+            return Err(denied(
+                HostProtocolErrorCode::TaskAuthorizationDenied,
+                "revocation-aware exact-window input lease",
+            ));
+        };
+        if let Err(error) = session.enable_guarded_unix_input(lease).await {
+            let _ = session.stop().await;
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
 /// Bind the constructor-owned recording fence before any optional recorder
 /// starts. Refusal tears down the same opened session before returning.
 pub(crate) async fn prepare_granted_session_recording(

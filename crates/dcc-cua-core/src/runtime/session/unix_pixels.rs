@@ -74,8 +74,7 @@ impl ComputerUseSession {
         Ok(result)
     }
 
-    #[cfg(target_os = "linux")]
-    pub async fn enable_guarded_x11_input(
+    pub async fn enable_guarded_unix_input(
         &mut self,
         lease: Arc<crate::RecordingAuthorization>,
     ) -> ComputerUseResult<()> {
@@ -83,14 +82,14 @@ impl ComputerUseSession {
         let handle = self.unix_pixels.clone().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "guarded X11 input requires a retained exact pixel session",
+                "guarded native pixel input requires a retained exact pixel session",
             )
         })?;
         unix_pixels::operate(handle, |bound| {
             lease.with_active(|| ()).map_err(|_| {
                 ComputerUseError::new(
                     ComputerUseErrorCode::InvalidTarget,
-                    "X11 input lease expired or was revoked",
+                    "native pixel input lease expired or was revoked",
                 )
             })?;
             bound.input_lease = Some(lease);
@@ -103,8 +102,7 @@ impl ComputerUseSession {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    pub(super) async fn guarded_x11_action(
+    pub(super) async fn guarded_unix_action(
         &mut self,
         action: &ComputerUseAction,
         observation: ComputerUseObservation,
@@ -121,7 +119,7 @@ impl ComputerUseSession {
         let deadline = deadline.ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "guarded X11 input requires the connected task deadline",
+                "guarded native pixel input requires the connected task deadline",
             )
         })?;
         super::super::pixel_input_policy::validate_pixel_action(action)?;
@@ -132,7 +130,7 @@ impl ComputerUseSession {
         let handle = self.unix_pixels.clone().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidTarget,
-                "missing X11 input binding",
+                "missing native pixel input binding",
             )
         })?;
         let cancel = Cancel(Arc::new(AtomicBool::new(false)));

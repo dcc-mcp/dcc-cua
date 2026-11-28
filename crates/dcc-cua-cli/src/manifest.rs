@@ -17,9 +17,13 @@ pub(crate) fn document() -> Value {
     if cfg!(target_os = "macos") {
         document["runtime"]["exact_window_pixels"] = json!({
             "availability":"macos_on_screen_application_window",
+            "input_requirements":["accessibility","screen_recording","escape_monitor","exact_ax_focus","unobscured_window","visible_execution_frame"],
             "cli_flag":"--pixels-only",
             "required_selectors":["--pid","--window-id"],
-            "read_only":true, "input_available":false, "activation_available":false,
+            "read_only_by_default":true, "input_available":true, "activation_available":false,
+            "input_actions":["click","key_sequence"],
+            "key_sequence":{"capability":"guarded_key_sequence_v1","action_scope":"raw_input/key_sequence",
+                "delivery_mode":"foreground","requires_visible_execution_frame":true,"max_steps":64},
             "recording_available":false, "accessibility_provider_started":false,
             "whole_desktop_fallback":false,
             "native_bounds_units":"display_points", "coordinate_units":"image_pixels",
